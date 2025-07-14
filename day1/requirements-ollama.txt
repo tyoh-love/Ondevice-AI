@@ -1,0 +1,16 @@
+# Requirements for MiniCPM-O Ollama version
+# Reduced dependencies compared to HuggingFace version
+
+# Core dependencies
+ollama>=0.1.7
+gradio>=4.0.0
+modelscope_studio>=0.0.5
+
+# Image and video processing
+Pillow>=9.0.0
+opencv-python>=4.5.0
+decord>=0.6.0
+numpy>=1.21.0  # Minimal usage for decord video frame extraction
+
+# Standard libraries
+requests>=2.25.0

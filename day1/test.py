@@ -1,7 +1,7 @@
-
 # 내 시스템 정보 확인하기
 import platform
 import subprocess
+
 import sys
 
 def check_system_info():

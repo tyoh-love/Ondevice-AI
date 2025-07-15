@@ -1,9 +1,41 @@
 
+import numpy as np
+import time
 import face_recognition
 import pickle
+import supervision as sv
 from sklearn.cluster import DBSCAN
 import networkx as nx
-from collections import Counter
+from collections import Counter, defaultdict
+from typing import List, Dict, Tuple, Optional
+
+# Import SmartSecuritySystem from the main security module
+# Note: Python module names can't have hyphens, so we need to import it differently
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Set environment variables for headless operation BEFORE importing cv2
+# This prevents Qt platform errors in WSL/SSH environments
+if 'WSL_DISTRO_NAME' in os.environ or 'SSH_CLIENT' in os.environ:
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+    os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+    print("WSL/SSH environment detected - running in compatibility mode")
+
+import cv2
+
+try:
+    # Import the module with hyphen in filename
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("realtime_behavior", "realtime-behavior.py")
+    realtime_behavior = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(realtime_behavior)
+    SmartSecuritySystem = realtime_behavior.SmartSecuritySystem
+except Exception as e:
+    print(f"Warning: Could not import SmartSecuritySystem: {e}")
+    # If running as standalone, define a mock class
+    class SmartSecuritySystem:
+        pass
 
 class AdvancedSecurityFeatures:
     """고급 보안 기능 모음"""
@@ -363,8 +395,13 @@ class RealtimeAnalyticsDashboard:
         return app
 
 # 전체 시스템 통합
-def run_advanced_security_system():
-    """고급 보안 시스템 실행"""
+def run_advanced_security_system(video_source=None, headless=False):
+    """고급 보안 시스템 실행
+    
+    Args:
+        video_source: 비디오 파일 경로 또는 카메라 인덱스 (기본값: None으로 사용자 입력 받음)
+        headless: True면 화면 표시 없이 실행 (WSL 환경용)
+    """
     
     print("""
     ╔══════════════════════════════════════════╗
@@ -376,11 +413,57 @@ def run_advanced_security_system():
     ╚══════════════════════════════════════════╝
     """)
     
+    # 비디오 소스 선택
+    if video_source is None:
+        print("\n실행 모드를 선택하세요:")
+        print("1. 비디오 파일 분석")
+        print("2. 웹캠 실시간 분석 (WSL에서는 작동하지 않을 수 있음)")
+        
+        choice = input("\n선택 (1-2): ")
+        
+        if choice == "1":
+            video_source = input("비디오 파일 경로를 입력하세요: ")
+            if not os.path.exists(video_source):
+                print(f"오류: 파일을 찾을 수 없습니다 - {video_source}")
+                return
+        elif choice == "2":
+            video_source = 0
+            print("웹캠을 사용합니다. WSL 환경에서는 작동하지 않을 수 있습니다.")
+        else:
+            print("잘못된 선택입니다.")
+            return
+    
     security_system = SmartSecuritySystem()
     advanced_features = AdvancedSecurityFeatures()
     
-    # 실시간 모니터링 with 고급 기능
-    cap = cv2.VideoCapture(0)
+    # 비디오 캡처
+    cap = cv2.VideoCapture(video_source)
+    if not cap.isOpened():
+        print(f"오류: 비디오 소스를 열 수 없습니다 - {video_source}")
+        return
+    
+    # 비디오 정보
+    fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    if isinstance(video_source, str):
+        print(f"\n비디오 파일 정보:")
+        print(f"  경로: {video_source}")
+        print(f"  총 프레임: {total_frames}")
+        print(f"  FPS: {fps}")
+    
+    # 결과 저장을 위한 VideoWriter (headless 모드)
+    out_writer = None
+    if headless and isinstance(video_source, str):
+        output_path = video_source.rsplit('.', 1)[0] + '_analyzed.mp4'
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        out_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        print(f"  분석 결과 저장: {output_path}")
+    
+    frame_count = 0
+    print("\n분석 중... (ESC 또는 'q' 키로 종료)")
     
     while True:
         ret, frame = cap.read()
@@ -388,31 +471,96 @@ def run_advanced_security_system():
             break
         
         # 기본 처리
-        annotated_frame, events = security_system.process_frame(frame, 0)
+        annotated_frame, events = security_system.process_frame(frame, frame_count)
         
         # 얼굴 인식
-        faces = advanced_features.face_recognition_analysis(frame)
-        for face in faces:
-            x1, y1, x2, y2 = face['location']
-            color = (0, 255, 0) if face['authorized'] else (0, 0, 255)
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(annotated_frame, face['name'], (x1, y1-10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        try:
+            faces = advanced_features.face_recognition_analysis(frame)
+            for face in faces:
+                x1, y1, x2, y2 = face['location']
+                color = (0, 255, 0) if face['authorized'] else (0, 0, 255)
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(annotated_frame, face['name'], (x1, y1-10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        except Exception as e:
+            # 얼굴 인식 실패 시 계속 진행
+            pass
         
         # 히트맵 오버레이
-        heatmap = advanced_features.generate_heatmap(
-            security_system.track_history, 
-            frame.shape[:2]
-        )
-        annotated_frame = cv2.addWeighted(annotated_frame, 0.7, heatmap, 0.3, 0)
+        if len(security_system.track_history) > 0:
+            heatmap = advanced_features.generate_heatmap(
+                security_system.track_history, 
+                frame.shape[:2]
+            )
+            annotated_frame = cv2.addWeighted(annotated_frame, 0.7, heatmap, 0.3, 0)
         
-        cv2.imshow('Advanced Security System', annotated_frame)
+        # 진행률 표시
+        if isinstance(video_source, str) and frame_count % 30 == 0:
+            progress = (frame_count / total_frames * 100) if total_frames > 0 else 0
+            print(f"\r진행률: {progress:.1f}% ({frame_count}/{total_frames})", end='', flush=True)
         
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # 결과 저장 (headless 모드)
+        if out_writer:
+            out_writer.write(annotated_frame)
+        
+        # 화면 표시 (headless가 아닌 경우)
+        if not headless:
+            cv2.imshow('Advanced Security System', annotated_frame)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q') or key == 27:  # 'q' 또는 ESC
+                break
+        
+        frame_count += 1
     
+    print(f"\n\n분석 완료! 총 {frame_count} 프레임 처리됨.")
+    
+    # 정리
     cap.release()
-    cv2.destroyAllWindows()
+    if out_writer:
+        out_writer.release()
+    if not headless:
+        cv2.destroyAllWindows()
+    
+    # 최종 통계 출력
+    print("\n📊 분석 통계:")
+    print(f"  추적된 객체 수: {len(security_system.track_history)}")
+    print(f"  감지된 이벤트 수: {len(security_system.event_log)}")
 
 if __name__ == "__main__":
-    run_advanced_security_system()
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="고급 AI 보안 시스템",
+        epilog="""
+사용 예시:
+  일반 실행: python security_advanced.py
+  비디오 파일: python security_advanced.py -v video.mp4
+  WSL/헤드리스: python security_advanced.py -v video.mp4 --headless
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument('-v', '--video', help='비디오 파일 경로')
+    parser.add_argument('--headless', action='store_true', 
+                       help='화면 표시 없이 실행 (WSL/서버 환경용)')
+    
+    args = parser.parse_args()
+    
+    # WSL 환경에서 headless 모드 자동 권장
+    if 'WSL_DISTRO_NAME' in os.environ and not args.headless and args.video:
+        print("\n⚠️  WSL 환경이 감지되었습니다.")
+        print("GUI 표시 문제를 피하려면 --headless 옵션을 사용하는 것을 권장합니다:")
+        print(f"python {sys.argv[0]} -v {args.video} --headless\n")
+        
+        response = input("계속하시겠습니까? (y/N): ")
+        if response.lower() != 'y':
+            print("--headless 옵션과 함께 다시 실행해주세요.")
+            sys.exit(0)
+    
+    try:
+        run_advanced_security_system(video_source=args.video, headless=args.headless)
+    except Exception as e:
+        print(f"\n오류 발생: {e}")
+        if "qt.qpa.plugin" in str(e).lower() or "xcb" in str(e).lower():
+            print("\n💡 해결 방법: --headless 옵션을 사용하세요")
+            print(f"   python {sys.argv[0]} -v {args.video} --headless")

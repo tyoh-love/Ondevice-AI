@@ -195,11 +195,17 @@ def count_file_types(files):
     return images_cnt, videos_cnt
 
 def create_multimodal_input(upload_image_disabled=False, upload_video_disabled=False):
-    return mgr.MultimodalInput(
-        upload_image_button_props={'label': 'Upload Image', 'disabled': upload_image_disabled, 'file_count': 'multiple'},
-        upload_video_button_props={'label': 'Upload Video', 'disabled': upload_video_disabled, 'file_count': 'single'},
-        submit_button_props={'label': 'Submit'}
-    )
+    try:
+        # Try newer API with button props
+        return mgr.MultimodalInput(
+            upload_image_button_props={'label': 'Upload Image', 'disabled': upload_image_disabled, 'file_count': 'multiple'},
+            upload_video_button_props={'label': 'Upload Video', 'disabled': upload_video_disabled, 'file_count': 'single'},
+            submit_button_props={'label': 'Submit'}
+        )
+    except TypeError:
+        # Fall back to simpler API for older versions
+        print("Note: Using legacy MultimodalInput API. Some features may be limited.")
+        return mgr.MultimodalInput()
 
 def respond(_question, _chat_bot, _app_cfg, use_sampling=True):
     """Simplified response function"""

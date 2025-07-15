@@ -1,0 +1,2 @@
+# YouTube downloader dependencies
+pytube==15.0.0

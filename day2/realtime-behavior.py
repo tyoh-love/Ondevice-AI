@@ -17,6 +17,51 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 
+def get_video_rotation(video_path):
+    """비디오의 회전 각도를 감지"""
+    try:
+        # OpenCV로 메타데이터 읽기 시도
+        cap = cv2.VideoCapture(video_path)
+        rotation = cap.get(cv2.CAP_PROP_ORIENTATION_META)
+        
+        # 프레임 크기로 portrait/landscape 감지
+        if rotation == 0 or rotation == -1:  # 메타데이터가 없는 경우
+            width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            
+            # 높이가 너비보다 큰 경우 (세로 영상)
+            if height > width:
+                # 첫 프레임을 읽어서 실제 크기 확인
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    h, w = frame.shape[:2]
+                    # 실제로는 가로인데 메타데이터상 세로인 경우
+                    if w > h:
+                        rotation = 90  # 또는 270, 상황에 따라 조정 필요
+        
+        cap.release()
+        return rotation if rotation != -1 else 0
+    except Exception as e:
+        print(f"비디오 회전 감지 오류: {e}")
+        return 0
+
+def rotate_frame(frame, angle):
+    """프레임을 주어진 각도로 회전"""
+    if angle == 0:
+        return frame
+    elif angle == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif angle == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    elif angle == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    else:
+        # 임의의 각도에 대한 회전
+        h, w = frame.shape[:2]
+        center = (w // 2, h // 2)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        return cv2.warpAffine(frame, matrix, (w, h))
+
 class SmartSecuritySystem:
     """AI 기반 스마트 보안 시스템"""
     
@@ -543,35 +588,105 @@ def create_security_dashboard():
         # 임시 설정 업데이트
         security_system.config['confidence_threshold'] = confidence_threshold
         
-        cap = cv2.VideoCapture(video_file)
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
-        
-        frames = []
-        events = []
-        frame_id = 0
-        
-        while len(frames) < 150:  # 최대 5초 처리
-            ret, frame = cap.read()
-            if not ret:
-                break
+        try:
+            # 비디오 열기 시도 - 다양한 백엔드 시도
+            cap = None
+            backends = [
+                cv2.CAP_FFMPEG,
+                cv2.CAP_ANY,
+                cv2.CAP_GSTREAMER,
+                cv2.CAP_MSMF  # Windows Media Foundation
+            ]
             
-            annotated_frame, frame_events = security_system.process_frame(frame, frame_id)
-            frames.append(annotated_frame)
-            events.extend(frame_events)
-            frame_id += 1
+            for backend in backends:
+                try:
+                    cap = cv2.VideoCapture(video_file, backend)
+                    if cap.isOpened():
+                        print(f"비디오 백엔드 {backend} 사용")
+                        break
+                except:
+                    continue
+            
+            if cap is None or not cap.isOpened():
+                return None, "비디오 파일을 열 수 없습니다. 파일이 손상되었거나 지원하지 않는 형식입니다."
+            
+            # 비디오 속성 가져오기
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            if fps == 0:
+                fps = 30  # 기본값 설정
+            
+            # 비디오 회전 각도 확인
+            rotation = get_video_rotation(video_file)
+            
+            frames = []
+            events = []
+            frame_id = 0
+            error_count = 0
+            
+            while len(frames) < 150:  # 최대 5초 처리
+                ret, frame = cap.read()
+                if not ret:
+                    error_count += 1
+                    if error_count > 5:  # 연속으로 5번 실패하면 중단
+                        break
+                    continue
+                
+                # 프레임이 None이 아닌지 확인
+                if frame is None:
+                    continue
+                
+                # 필요시 프레임 회전
+                if rotation != 0:
+                    frame = rotate_frame(frame, rotation)
+                
+                try:
+                    annotated_frame, frame_events = security_system.process_frame(frame, frame_id)
+                    frames.append(annotated_frame)
+                    events.extend(frame_events)
+                    frame_id += 1
+                except Exception as e:
+                    print(f"프레임 처리 중 오류: {e}")
+                    continue
+            
+            cap.release()
+        except Exception as e:
+            return None, f"비디오 처리 중 오류가 발생했습니다: {str(e)}"
         
-        cap.release()
+        # 프레임이 읽혔는지 확인
+        if not frames:
+            return None, "비디오에서 프레임을 읽을 수 없습니다. 비디오 형식이나 코덱 문제일 수 있습니다."
         
         # 결과 비디오 생성
-        output_path = "analyzed_video.mp4"
-        height, width = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        
-        for frame in frames:
-            out.write(frame)
-        
-        out.release()
+        try:
+            output_path = "analyzed_video.mp4"
+            height, width = frames[0].shape[:2]
+            
+            # 코덱 설정 - 다양한 코덱 시도
+            codecs = ['mp4v', 'XVID', 'MJPG', 'H264']
+            out = None
+            
+            for codec in codecs:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+                    if out.isOpened():
+                        break
+                except:
+                    continue
+            
+            if out is None or not out.isOpened():
+                return None, "비디오 출력 파일을 생성할 수 없습니다."
+            
+            # 프레임 쓰기
+            for frame in frames:
+                # 프레임 크기가 일치하는지 확인
+                if frame.shape[:2] != (height, width):
+                    frame = cv2.resize(frame, (width, height))
+                out.write(frame)
+            
+            out.release()
+        except Exception as e:
+            return None, f"비디오 저장 중 오류가 발생했습니다: {str(e)}"
         
         # 이벤트 요약
         event_summary = f"총 {len(events)}개의 이벤트가 감지되었습니다.\n"

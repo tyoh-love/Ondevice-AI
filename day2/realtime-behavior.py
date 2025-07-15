@@ -1,4 +1,3 @@
-# smart_security_system.py - 스마트 보안 시스템
 
 import cv2
 import torch
@@ -544,7 +543,7 @@ def create_security_dashboard():
         # 임시 설정 업데이트
         security_system.config['confidence_threshold'] = confidence_threshold
         
-        cap = cv2.VideoCapture(video_file.name)
+        cap = cv2.VideoCapture(video_file)
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         
         frames = []

@@ -279,10 +279,12 @@ class ModelOptimizer:
         
         print()
     
-    def create_dummy_data(self, num_samples=1000):
+    def create_dummy_data(self, num_samples=1000, device=None):
         """테스트용 더미 데이터 생성"""
-        X = torch.randn(num_samples, 784)
-        y = torch.randint(0, 10, (num_samples,))
+        if device is None:
+            device = 'cpu'  # Default to CPU to avoid issues with quantization
+        X = torch.randn(num_samples, 784, device=device)
+        y = torch.randint(0, 10, (num_samples,), device=device)
         return DataLoader(TensorDataset(X, y), batch_size=32, shuffle=True)
     
     def measure_performance(self, model, dataloader, name="Model", model_type=None):
@@ -318,7 +320,28 @@ class ModelOptimizer:
         with torch.no_grad():
             for X, _ in dataloader:
                 # Move input to the same device as the model
-                model_device = next(model.parameters()).device
+                # More robust quantized model detection
+                is_quantized = (
+                    'quantized' in str(type(model)).lower() or 
+                    hasattr(model, '_is_quantized') or
+                    any('quantized' in str(type(m)).lower() for m in model.modules()) or
+                    any(hasattr(m, '_packed_params') for m in model.modules())  # Common in quantized layers
+                )
+                
+                if is_quantized:
+                    # Quantized models MUST run on CPU
+                    model_device = torch.device('cpu')
+                    # Ensure model is on CPU
+                    if hasattr(model, 'to'):
+                        model = model.cpu()
+                else:
+                    try:
+                        model_device = next(model.parameters()).device
+                    except StopIteration:
+                        # If model has no parameters, default to CPU for safety
+                        model_device = torch.device('cpu')
+                
+                # Move input to model device
                 X = X.to(model_device)
                 
                 start_time = time.time()
@@ -368,11 +391,15 @@ class ModelOptimizer:
                 dtype=torch.qint8
             )
             
+            # Ensure quantized model stays on CPU
+            quantized_model = quantized_model.cpu()
+            
             print("  ✅ 3단계: 양자화 완료!")
             if self.explain_mode:
                 print("    • 가중치가 8-bit 정수로 변환됨")
                 print("    • 메모리 사용량 약 4배 감소")
                 print("    • 추론 속도 향상")
+                print("    • 모델이 CPU에서 실행됨 (양자화 요구사항)")
             
             return quantized_model
         except RuntimeError as e:
@@ -727,8 +754,8 @@ class ModelOptimizer:
         """동적 양자화 데모"""
         print("\n=== 동적 양자화 데모 ===\n")
         
-        # 데이터 준비
-        dataloader = self.create_dummy_data()
+        # 데이터 준비 - CPU용 데이터로더 생성 (양자화는 CPU에서만 작동)
+        dataloader = self.create_dummy_data(device='cpu')
         
         # 원본 모델
         original_model = OptimizableModel().cpu()  # 동적 양자화는 CPU에서만 작동

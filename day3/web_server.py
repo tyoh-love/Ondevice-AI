@@ -29,7 +29,7 @@ def run_async(func):
 class Qwen2VLService:
     """Qwen2.5-VL Multimodal Service for both text and vision"""
     
-    def __init__(self, model_name="qwen2.5-vl:latest"):
+    def __init__(self, model_name="qwen2.5vl:3b"):
         self.model_name = model_name
         print("🤖 Qwen2.5-VL 멀티모달 서비스 초기화 중...")
     
@@ -68,39 +68,40 @@ Question: {question}
 
 Answer:"""
             
-            # Prepare message content
+            # Prepare message for Ollama format
             if image_data:
-                # For vision tasks, include both text and image
-                message_content = [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_data}"
-                        }
+                # For vision tasks, images go inside the message object
+                response = ollama.chat(
+                    model=self.model_name,
+                    messages=[{
+                        'role': 'user',
+                        'content': prompt,
+                        'images': [image_data]  # Images go inside the message
+                    }],
+                    options={
+                        'temperature': 0.3,
+                        'top_p': 0.9,
+                        'num_predict': 1024,
+                        'repeat_penalty': 1.1,
+                        'num_ctx': 4096
                     }
-                ]
+                )
             else:
                 # For text-only tasks
-                message_content = prompt
-            
-            response = ollama.chat(
-                model=self.model_name,
-                messages=[{
-                    'role': 'user',
-                    'content': message_content
-                }],
-                options={
-                    'temperature': 0.3,
-                    'top_p': 0.9,
-                    'num_predict': 1024,
-                    'repeat_penalty': 1.1,
-                    'num_ctx': 4096
-                }
-            )
+                response = ollama.chat(
+                    model=self.model_name,
+                    messages=[{
+                        'role': 'user',
+                        'content': prompt
+                    }],
+                    options={
+                        'temperature': 0.3,
+                        'top_p': 0.9,
+                        'num_predict': 1024,
+                        'repeat_penalty': 1.1,
+                        'num_ctx': 4096
+                    }
+                )
             
             answer = response['message']['content'].strip()
             if image_data:
@@ -619,7 +620,7 @@ def status():
     try:
         models_response = ollama.list()
         model_names = [model.model for model in models_response.models]
-        qwen2vl_available = 'qwen2.5-vl:latest' in model_names
+        qwen2vl_available = 'qwen2.5vl:3b' in model_names
     except:
         pass
     

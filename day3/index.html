@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Whisper STT Web Interface</title>
+    <title>Voice Q&A with ExaOne - Natural Voice Interaction</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -113,15 +113,110 @@
             transition: height 0.1s ease;
         }
         
-        #transcription {
+        #transcription, #conversation {
             background: rgba(255, 255, 255, 0.9);
             color: #333;
             padding: 20px;
             border-radius: 10px;
             min-height: 150px;
+            max-height: 400px;
+            overflow-y: auto;
             font-size: 16px;
             line-height: 1.6;
             box-shadow: inset 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .qa-mode {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .mode-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 25px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .mode-btn.active {
+            background: linear-gradient(45deg, #a29bfe, #6c5ce7);
+            color: white;
+        }
+        
+        .mode-btn:not(.active) {
+            background: rgba(255, 255, 255, 0.3);
+            color: white;
+        }
+        
+        .vad-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .vad-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 15px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        
+        .vad-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #95a5a6;
+            transition: all 0.3s ease;
+        }
+        
+        .vad-dot.listening {
+            background: #2ecc71;
+            animation: pulse 1s infinite;
+        }
+        
+        .vad-dot.speaking {
+            background: #e74c3c;
+            animation: pulse 0.5s infinite;
+        }
+        
+        .vad-dot.processing {
+            background: #f39c12;
+            animation: pulse 0.7s infinite;
+        }
+        
+        .question-item {
+            background: linear-gradient(45deg, #74b9ff, #0984e3);
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 4px solid #0984e3;
+        }
+        
+        .answer-item {
+            background: linear-gradient(45deg, #00b894, #00cec9);
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 4px solid #00b894;
+        }
+        
+        .timestamp {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-bottom: 5px;
         }
         
         .settings {
@@ -145,7 +240,13 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎤 Whisper STT</h1>
+        <h1>🎤 Voice Q&A with ExaOne</h1>
+        
+        <div class="qa-mode">
+            <button id="sttModeBtn" class="mode-btn active">STT 모드</button>
+            <button id="qaModeBtn" class="mode-btn">Q&A 모드</button>
+            <button id="vadModeBtn" class="mode-btn">VAD 자동 모드</button>
+        </div>
         
         <div class="settings">
             <label>
@@ -168,9 +269,25 @@
             </label>
         </div>
         
+        <div class="vad-controls">
+            <div class="vad-indicator">
+                <div class="vad-dot" id="vadDot"></div>
+                <span id="vadStatus">대기 중</span>
+            </div>
+            <label>
+                VAD 감도:
+                <select id="vadSensitivity">
+                    <option value="low">낮음</option>
+                    <option value="medium" selected>보통</option>
+                    <option value="high">높음</option>
+                </select>
+            </label>
+        </div>
+        
         <div class="controls">
             <button id="startBtn">🎙️ 녹음 시작</button>
             <button id="stopBtn" disabled>⏹️ 녹음 중지</button>
+            <button id="vadToggleBtn">🔊 VAD 시작</button>
             <button id="clearBtn">🗑️ 초기화</button>
         </div>
         
@@ -178,13 +295,17 @@
         
         <div class="visualizer" id="visualizer"></div>
         
-        <div id="transcription">
+        <div id="transcription" style="display: block;">
             <p><em>음성 인식 결과가 여기에 표시됩니다...</em></p>
+        </div>
+        
+        <div id="conversation" style="display: none;">
+            <p><em>음성으로 질문하면 ExaOne이 답변해드립니다...</em></p>
         </div>
     </div>
 
     <script>
-        class WhisperWebSTT {
+        class VoiceQASystem {
             constructor() {
                 this.mediaRecorder = null;
                 this.audioContext = null;
@@ -192,6 +313,14 @@
                 this.audioChunks = [];
                 this.isRecording = false;
                 this.stream = null;
+                this.vadEnabled = false;
+                this.currentMode = 'stt'; // 'stt', 'qa', 'vad'
+                this.vadThreshold = 0.01;
+                this.vadSilenceCounter = 0;
+                this.vadSilenceThreshold = 50; // ~2초 (40ms * 50)
+                this.vadSpeakingCounter = 0;
+                this.vadSpeakingThreshold = 5; // ~200ms
+                this.vadAnimationFrame = null;
                 
                 this.initializeElements();
                 this.initializeVisualizer();
@@ -202,11 +331,19 @@
                 this.startBtn = document.getElementById('startBtn');
                 this.stopBtn = document.getElementById('stopBtn');
                 this.clearBtn = document.getElementById('clearBtn');
+                this.vadToggleBtn = document.getElementById('vadToggleBtn');
                 this.status = document.getElementById('status');
                 this.transcription = document.getElementById('transcription');
+                this.conversation = document.getElementById('conversation');
                 this.languageSelect = document.getElementById('languageSelect');
                 this.modelSelect = document.getElementById('modelSelect');
                 this.visualizer = document.getElementById('visualizer');
+                this.vadDot = document.getElementById('vadDot');
+                this.vadStatus = document.getElementById('vadStatus');
+                this.vadSensitivity = document.getElementById('vadSensitivity');
+                this.sttModeBtn = document.getElementById('sttModeBtn');
+                this.qaModeBtn = document.getElementById('qaModeBtn');
+                this.vadModeBtn = document.getElementById('vadModeBtn');
             }
             
             initializeVisualizer() {
@@ -222,7 +359,69 @@
             setupEventListeners() {
                 this.startBtn.addEventListener('click', () => this.startRecording());
                 this.stopBtn.addEventListener('click', () => this.stopRecording());
-                this.clearBtn.addEventListener('click', () => this.clearTranscription());
+                this.clearBtn.addEventListener('click', () => this.clearContent());
+                this.vadToggleBtn.addEventListener('click', () => this.toggleVAD());
+                
+                // Mode switching
+                this.sttModeBtn.addEventListener('click', () => this.switchMode('stt'));
+                this.qaModeBtn.addEventListener('click', () => this.switchMode('qa'));
+                this.vadModeBtn.addEventListener('click', () => this.switchMode('vad'));
+                
+                // VAD sensitivity
+                this.vadSensitivity.addEventListener('change', () => this.updateVADSensitivity());
+            }
+            
+            switchMode(mode) {
+                this.currentMode = mode;
+                
+                // Update UI
+                document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+                
+                if (mode === 'stt') {
+                    this.sttModeBtn.classList.add('active');
+                    this.transcription.style.display = 'block';
+                    this.conversation.style.display = 'none';
+                    this.startBtn.style.display = 'inline-block';
+                    this.stopBtn.style.display = 'inline-block';
+                    this.vadToggleBtn.style.display = 'none';
+                    if (this.vadEnabled) this.stopVAD();
+                } else if (mode === 'qa') {
+                    this.qaModeBtn.classList.add('active');
+                    this.transcription.style.display = 'none';
+                    this.conversation.style.display = 'block';
+                    this.startBtn.style.display = 'inline-block';
+                    this.stopBtn.style.display = 'inline-block';
+                    this.vadToggleBtn.style.display = 'none';
+                    if (this.vadEnabled) this.stopVAD();
+                } else if (mode === 'vad') {
+                    this.vadModeBtn.classList.add('active');
+                    this.transcription.style.display = 'none';
+                    this.conversation.style.display = 'block';
+                    this.startBtn.style.display = 'none';
+                    this.stopBtn.style.display = 'none';
+                    this.vadToggleBtn.style.display = 'inline-block';
+                }
+                
+                this.status.textContent = `${mode.toUpperCase()} 모드 활성화`;
+            }
+            
+            updateVADSensitivity() {
+                const sensitivity = this.vadSensitivity.value;
+                switch(sensitivity) {
+                    case 'low':
+                        this.vadThreshold = 0.005;
+                        this.vadSilenceThreshold = 75; // 3초
+                        break;
+                    case 'medium':
+                        this.vadThreshold = 0.01;
+                        this.vadSilenceThreshold = 50; // 2초
+                        break;
+                    case 'high':
+                        this.vadThreshold = 0.02;
+                        this.vadSilenceThreshold = 25; // 1초
+                        break;
+                }
+                console.log(`VAD 감도 변경: ${sensitivity}, 임계값: ${this.vadThreshold}`);
             }
             
             async startRecording() {
@@ -288,7 +487,7 @@
             }
             
             async processAudio() {
-                this.status.textContent = '음성 처리 중...';
+                this.updateVADStatus('processing', '처리 중');
                 
                 const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
                 const formData = new FormData();
@@ -297,7 +496,12 @@
                 formData.append('model', this.modelSelect.value);
                 
                 try {
-                    const response = await fetch('/transcribe', {
+                    let endpoint = '/transcribe';
+                    if (this.currentMode === 'qa' || this.currentMode === 'vad') {
+                        endpoint = '/chat';
+                    }
+                    
+                    const response = await fetch(endpoint, {
                         method: 'POST',
                         body: formData
                     });
@@ -305,14 +509,20 @@
                     const result = await response.json();
                     
                     if (result.success) {
-                        this.displayTranscription(result.text);
-                        this.status.textContent = '인식 완료';
+                        if (this.currentMode === 'stt') {
+                            this.displayTranscription(result.text);
+                        } else {
+                            this.displayConversation(result.question, result.answer);
+                        }
+                        this.updateVADStatus('listening', 'VAD 활성');
                     } else {
-                        this.status.textContent = '인식 실패: ' + result.error;
+                        this.status.textContent = '처리 실패: ' + result.error;
+                        this.updateVADStatus('listening', 'VAD 활성');
                     }
                 } catch (error) {
                     console.error('서버 통신 오류:', error);
                     this.status.textContent = '서버 연결 실패';
+                    this.updateVADStatus('listening', 'VAD 활성');
                 }
             }
             
@@ -335,9 +545,191 @@
                 this.transcription.insertBefore(newEntry, this.transcription.firstChild);
             }
             
-            clearTranscription() {
-                this.transcription.innerHTML = '<p><em>음성 인식 결과가 여기에 표시됩니다...</em></p>';
+            displayConversation(question, answer) {
+                const timestamp = new Date().toLocaleTimeString();
+                const currentContent = this.conversation.innerHTML;
+                
+                if (currentContent.includes('<em>')) {
+                    this.conversation.innerHTML = '';
+                }
+                
+                const questionDiv = document.createElement('div');
+                questionDiv.className = 'question-item';
+                questionDiv.innerHTML = `
+                    <div class="timestamp">[${timestamp}] 질문</div>
+                    <div>${question}</div>
+                `;
+                
+                const answerDiv = document.createElement('div');
+                answerDiv.className = 'answer-item';
+                answerDiv.innerHTML = `
+                    <div class="timestamp">[${timestamp}] ExaOne 답변</div>
+                    <div>${answer}</div>
+                `;
+                
+                this.conversation.insertBefore(answerDiv, this.conversation.firstChild);
+                this.conversation.insertBefore(questionDiv, this.conversation.firstChild);
+                
+                // Auto-scroll to top
+                this.conversation.scrollTop = 0;
+            }
+            
+            clearContent() {
+                if (this.currentMode === 'stt') {
+                    this.transcription.innerHTML = '<p><em>음성 인식 결과가 여기에 표시됩니다...</em></p>';
+                } else {
+                    this.conversation.innerHTML = '<p><em>음성으로 질문하면 ExaOne이 답변해드립니다...</em></p>';
+                }
                 this.status.textContent = '초기화 완료';
+            }
+            
+            // VAD Methods
+            async toggleVAD() {
+                if (this.vadEnabled) {
+                    this.stopVAD();
+                } else {
+                    await this.startVAD();
+                }
+            }
+            
+            async startVAD() {
+                try {
+                    this.stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            sampleRate: 16000,
+                            channelCount: 1,
+                            echoCancellation: true,
+                            noiseSuppression: true
+                        }
+                    });
+                    
+                    this.audioContext = new AudioContext({ sampleRate: 16000 });
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 256;
+                    
+                    const source = this.audioContext.createMediaStreamSource(this.stream);
+                    source.connect(this.analyser);
+                    
+                    this.vadEnabled = true;
+                    this.vadToggleBtn.textContent = '🔇 VAD 중지';
+                    this.updateVADStatus('listening', 'VAD 활성');
+                    
+                    this.startVADLoop();
+                    this.startVisualization();
+                    
+                } catch (error) {
+                    console.error('VAD 시작 오류:', error);
+                    this.status.textContent = 'VAD 시작 실패';
+                }
+            }
+            
+            stopVAD() {
+                this.vadEnabled = false;
+                
+                if (this.vadAnimationFrame) {
+                    cancelAnimationFrame(this.vadAnimationFrame);
+                }
+                
+                if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+                    this.mediaRecorder.stop();
+                }
+                
+                if (this.stream) {
+                    this.stream.getTracks().forEach(track => track.stop());
+                }
+                
+                if (this.audioContext) {
+                    this.audioContext.close();
+                }
+                
+                this.vadToggleBtn.textContent = '🔊 VAD 시작';
+                this.updateVADStatus('', '대기 중');
+                this.stopVisualization();
+            }
+            
+            startVADLoop() {
+                const bufferLength = this.analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                
+                const checkVAD = () => {
+                    if (!this.vadEnabled) return;
+                    
+                    this.vadAnimationFrame = requestAnimationFrame(checkVAD);
+                    
+                    this.analyser.getByteTimeDomainData(dataArray);
+                    
+                    // Calculate RMS (Root Mean Square) for voice activity detection
+                    let sum = 0;
+                    for (let i = 0; i < bufferLength; i++) {
+                        const sample = (dataArray[i] - 128) / 128;
+                        sum += sample * sample;
+                    }
+                    const rms = Math.sqrt(sum / bufferLength);
+                    
+                    if (rms > this.vadThreshold) {
+                        // Voice detected
+                        this.vadSilenceCounter = 0;
+                        this.vadSpeakingCounter++;
+                        
+                        if (this.vadSpeakingCounter >= this.vadSpeakingThreshold && !this.isRecording) {
+                            this.startAutoRecording();
+                        }
+                        
+                        this.updateVADStatus('speaking', '음성 감지');
+                    } else {
+                        // Silence detected
+                        this.vadSpeakingCounter = 0;
+                        this.vadSilenceCounter++;
+                        
+                        if (this.vadSilenceCounter >= this.vadSilenceThreshold && this.isRecording) {
+                            this.stopAutoRecording();
+                        }
+                        
+                        if (!this.isRecording) {
+                            this.updateVADStatus('listening', 'VAD 활성');
+                        }
+                    }
+                };
+                
+                checkVAD();
+            }
+            
+            async startAutoRecording() {
+                console.log('VAD: 자동 녹음 시작');
+                this.isRecording = true;
+                this.audioChunks = [];
+                
+                this.mediaRecorder = new MediaRecorder(this.stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                this.mediaRecorder.ondataavailable = (event) => {
+                    this.audioChunks.push(event.data);
+                };
+                
+                this.mediaRecorder.onstop = () => {
+                    this.processAudio();
+                };
+                
+                this.mediaRecorder.start();
+                this.updateVADStatus('speaking', '녹음 중');
+            }
+            
+            stopAutoRecording() {
+                console.log('VAD: 자동 녹음 중지');
+                if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+                    this.mediaRecorder.stop();
+                }
+                this.isRecording = false;
+            }
+            
+            updateVADStatus(state, text) {
+                this.vadDot.className = `vad-dot ${state}`;
+                this.vadStatus.textContent = text;
+                
+                if (state) {
+                    this.status.textContent = text;
+                }
             }
             
             updateUI() {
@@ -387,7 +779,7 @@
         
         // Initialize when page loads
         document.addEventListener('DOMContentLoaded', () => {
-            new WhisperWebSTT();
+            new VoiceQASystem();
         });
     </script>
 </body>

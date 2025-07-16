@@ -17,7 +17,7 @@ def check_dependencies():
     
     # Python 패키지 확인
     required_packages = [
-        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad'
+        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad', 'ollama'
     ]
     
     missing_packages = []
@@ -46,9 +46,33 @@ def check_dependencies():
     
     return True
 
+def check_ollama_service():
+    """Ollama 서비스 확인"""
+    print("🔍 Ollama 서비스 확인 중...")
+    
+    try:
+        import ollama
+        # ExaOne 모델 확인
+        models_response = ollama.list()
+        model_names = [model.model for model in models_response.models]
+        
+        required_model = 'exaone3.5:2.4b'
+        if required_model not in model_names:
+            print(f"❌ {required_model} 모델이 없습니다")
+            print(f"다음 명령으로 설치하세요: ollama pull {required_model}")
+            return False
+        
+        print(f"✅ {required_model} 모델 확인됨")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ollama 연결 실패: {e}")
+        print("Ollama 서비스를 시작하세요: ollama serve")
+        return False
+
 def run_server():
     """웹 서버 실행"""
-    print("\n🚀 Whisper Web STT 서버 시작...")
+    print("\n🚀 Voice Q&A with ExaOne 서버 시작...")
     
     # 현재 디렉토리에서 실행
     os.chdir(Path(__file__).parent)
@@ -57,7 +81,8 @@ def run_server():
     try:
         from web_server import app
         print("📱 브라우저에서 http://localhost:5000 접속하세요")
-        print("🎤 마이크 권한을 허용해주세요")
+        print("🎤 마이크 권한을 허용해주세요 (VAD 자동 감지)")
+        print("🤖 음성으로 질문하면 ExaOne이 답변합니다")
         print("💡 Ctrl+C로 종료")
         
         # 자동으로 브라우저 열기 (WSL에서는 작동하지 않을 수 있음)
@@ -75,14 +100,18 @@ def run_server():
 
 def main():
     """메인 함수"""
-    print("🎤 Whisper Web STT - WSL Ubuntu 호환 버전")
-    print("=" * 50)
+    print("🎤 Voice Q&A with ExaOne - Natural Voice Interaction")
+    print("=" * 55)
     
     if not check_dependencies():
         print("\n❌ 의존성 확인 실패. 설치 후 다시 실행하세요.")
         sys.exit(1)
     
-    print("\n✅ 모든 의존성 확인 완료!")
+    if not check_ollama_service():
+        print("\n❌ Ollama 서비스 확인 실패. ExaOne 모델을 설치하세요.")
+        sys.exit(1)
+    
+    print("\n✅ 모든 의존성 및 서비스 확인 완료!")
     run_server()
 
 if __name__ == "__main__":

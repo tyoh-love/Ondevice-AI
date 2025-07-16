@@ -5,8 +5,59 @@ import wave
 import tempfile
 import os
 import torch
+import ollama
+import traceback
 
 app = Flask(__name__)
+
+class ExaOneService:
+    """ExaOne Q&A Service"""
+    
+    def __init__(self, model_name="exaone3.5:2.4b"):
+        self.model_name = model_name
+        print("🤖 ExaOne Q&A 서비스 초기화 중...")
+    
+    def answer_question(self, question, language="ko"):
+        """질문에 대한 답변 생성"""
+        try:
+            print(f"🧠 ExaOne으로 질문 처리 중: {question}")
+            
+            if language == "ko":
+                prompt = f"""다음 질문에 대해 정확하고 도움이 되는 답변을 한국어로 제공해주세요. 간결하면서도 완전한 답변을 해주세요.
+
+질문: {question}
+
+답변:"""
+            else:
+                prompt = f"""Please provide an accurate and helpful answer to the following question. Keep it concise but complete.
+
+Question: {question}
+
+Answer:"""
+            
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{
+                    'role': 'user',
+                    'content': prompt
+                }],
+                options={
+                    'temperature': 0.3,
+                    'top_p': 0.9,
+                    'num_predict': 1024,
+                    'repeat_penalty': 1.1,
+                    'num_ctx': 4096
+                }
+            )
+            
+            answer = response['message']['content'].strip()
+            print(f"✅ ExaOne 답변 완료")
+            return answer
+            
+        except Exception as e:
+            print(f"❌ ExaOne 처리 오류: {e}")
+            traceback.print_exc()
+            return f"죄송합니다. 답변 생성 중 오류가 발생했습니다: {str(e)}"
 
 class WebWhisperSTT:
     """Web-based Whisper STT Service"""
@@ -82,8 +133,9 @@ class WebWhisperSTT:
             print(f"음성 인식 오류: {e}")
             return None
 
-# 전역 STT 인스턴스
+# 전역 서비스 인스턴스
 stt_service = WebWhisperSTT()
+qa_service = ExaOneService()
 
 @app.route('/')
 def index():
@@ -131,14 +183,102 @@ def transcribe():
         print(f"서버 오류: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/answer', methods=['POST'])
+def answer_question():
+    """ExaOne으로 질문 답변 API"""
+    try:
+        data = request.get_json()
+        if not data or 'question' not in data:
+            return jsonify({'success': False, 'error': '질문이 없습니다'})
+        
+        question = data['question'].strip()
+        if not question:
+            return jsonify({'success': False, 'error': '빈 질문입니다'})
+        
+        language = data.get('language', 'ko')
+        
+        print(f"💬 질문 처리 요청: {question}")
+        
+        # ExaOne으로 답변 생성
+        answer = qa_service.answer_question(question, language)
+        
+        return jsonify({
+            'success': True,
+            'question': question,
+            'answer': answer,
+            'language': language
+        })
+        
+    except Exception as e:
+        print(f"질문 답변 오류: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/chat', methods=['POST'])
+def voice_chat():
+    """음성 대화 API (STT + ExaOne 통합)"""
+    try:
+        # 파일 확인
+        if 'audio' not in request.files:
+            return jsonify({'success': False, 'error': '오디오 파일이 없습니다'})
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'success': False, 'error': '파일이 선택되지 않았습니다'})
+        
+        # 설정 가져오기
+        language = request.form.get('language', 'ko')
+        model_size = request.form.get('model', 'base')
+        
+        print(f"🎙️ 음성 대화 요청: 언어={language}, 모델={model_size}")
+        
+        # 1단계: 음성 인식
+        audio_data = stt_service.process_webm_audio(audio_file)
+        if audio_data is None:
+            return jsonify({'success': False, 'error': '오디오 처리 실패'})
+        
+        text = stt_service.transcribe_audio(audio_data, language, model_size)
+        if text is None:
+            return jsonify({'success': False, 'error': '음성 인식 실패'})
+        
+        print(f"📝 인식된 질문: {text}")
+        
+        # 2단계: ExaOne으로 답변 생성
+        answer = qa_service.answer_question(text, language)
+        
+        print(f"🤖 생성된 답변: {answer}")
+        
+        return jsonify({
+            'success': True,
+            'question': text,
+            'answer': answer,
+            'language': language,
+            'model': model_size
+        })
+        
+    except Exception as e:
+        print(f"음성 대화 오류: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/status')
 def status():
     """서비스 상태 확인"""
+    # ExaOne 모델 상태 확인
+    exaone_available = False
+    try:
+        models_response = ollama.list()
+        model_names = [model.model for model in models_response.models]
+        exaone_available = 'exaone3.5:2.4b' in model_names
+    except:
+        pass
+    
     return jsonify({
         'status': 'running',
         'loaded_models': list(stt_service.models.keys()),
         'available_models': ['base', 'small', 'medium', 'large'],
-        'cuda_available': torch.cuda.is_available()
+        'cuda_available': torch.cuda.is_available(),
+        'exaone_available': exaone_available,
+        'qa_service': 'ExaOne Q&A',
+        'vad_enabled': True
     })
 
 @app.route('/health')
@@ -147,9 +287,10 @@ def health():
     return jsonify({'status': 'healthy'})
 
 if __name__ == '__main__':
-    print("🚀 Whisper Web STT 서버 시작 중...")
+    print("🚀 Voice Q&A with ExaOne 서버 시작 중...")
     print("📱 브라우저에서 http://localhost:5000 접속")
-    print("🎤 마이크 권한을 허용해주세요")
+    print("🎤 마이크 권한을 허용해주세요 (VAD 자동 감지)")
+    print("🤖 음성으로 질문하면 ExaOne이 답변합니다")
     print("⚡ CUDA 사용 가능:", torch.cuda.is_available())
     
     # FFmpeg 설치 확인

@@ -317,13 +317,15 @@ class ModelOptimizer:
         
         with torch.no_grad():
             for X, _ in dataloader:
-                X = X.to(self.device)
+                # Move input to the same device as the model
+                model_device = next(model.parameters()).device
+                X = X.to(model_device)
                 
                 start_time = time.time()
                 _ = model(X)
                 
                 # GPU 동기화 (정확한 시간 측정)
-                if self.device.type == 'cuda':
+                if model_device.type == 'cuda':
                     torch.cuda.synchronize()
                 
                 total_time += time.time() - start_time

@@ -1516,10 +1516,29 @@
                 this.stopVisualization();
             }
             
-            resumeVADListening() {
+            async resumeVADListening() {
                 // Resume VAD listening after processing - critical for continuous chat
                 if (this.vadEnabled && !this.isProcessing) {
                     console.log('🔄 VAD listening resumed for continuous chat');
+                    
+                    // Validate audio health before resuming - CRITICAL for second+ conversations
+                    if (!this.isAudioSystemHealthy()) {
+                        console.log('🔧 Audio system corrupted, recreating...');
+                        
+                        try {
+                            const recreated = await this.recreateAudioSystem();
+                            if (!recreated) {
+                                console.error('❌ Failed to recreate audio system');
+                                this.status.textContent = '오디오 시스템 복구 실패';
+                                return;
+                            }
+                            console.log('✅ Audio system successfully recreated');
+                        } catch (error) {
+                            console.error('❌ Audio recreation error:', error);
+                            this.status.textContent = '오디오 시스템 복구 실패';
+                            return;
+                        }
+                    }
                     
                     // Reset counters for fresh detection
                     this.vadSilenceCounter = 0;
@@ -1532,7 +1551,7 @@
                         this.updateVADStatus('listening', 'VAD 활성 - 다음 대화 준비');
                     }
                     
-                    // Ensure VAD loop is running
+                    // Ensure VAD loop is running with healthy audio components
                     if (!this.vadAnimationFrame) {
                         this.startVADLoop();
                     }
@@ -1543,6 +1562,85 @@
                 }
             }
             
+            isAudioSystemHealthy() {
+                // Comprehensive audio component health check
+                const streamHealthy = this.stream && this.stream.active && this.stream.getTracks().length > 0;
+                const contextHealthy = this.audioContext && this.audioContext.state === 'running';
+                const analyserHealthy = this.analyser && this.analyser.context === this.audioContext;
+                
+                const isHealthy = streamHealthy && contextHealthy && analyserHealthy;
+                
+                if (!isHealthy) {
+                    console.log(`🔍 Audio health check failed:`, {
+                        streamHealthy,
+                        contextHealthy, 
+                        analyserHealthy,
+                        streamState: this.stream?.active,
+                        contextState: this.audioContext?.state,
+                        analyserExists: !!this.analyser
+                    });
+                }
+                
+                return isHealthy;
+            }
+            
+            async recreateAudioSystem() {
+                console.log('🔧 Recreating audio system for VAD recovery');
+                
+                try {
+                    // Clean up broken components
+                    this.cleanupBrokenAudio();
+                    
+                    // Recreate audio system from scratch
+                    this.stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            sampleRate: 16000,
+                            channelCount: 1,
+                            echoCancellation: true,
+                            noiseSuppression: true
+                        }
+                    });
+                    
+                    this.audioContext = new AudioContext({ sampleRate: 16000 });
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 256;
+                    
+                    const source = this.audioContext.createMediaStreamSource(this.stream);
+                    source.connect(this.analyser);
+                    
+                    console.log('✅ Audio system recreated successfully');
+                    return true;
+                    
+                } catch (error) {
+                    console.error('❌ Failed to recreate audio system:', error);
+                    return false;
+                }
+            }
+            
+            cleanupBrokenAudio() {
+                // Clean up potentially broken audio components
+                try {
+                    if (this.stream) {
+                        this.stream.getTracks().forEach(track => track.stop());
+                        this.stream = null;
+                    }
+                } catch (e) {
+                    console.log('Stream cleanup error (expected):', e);
+                }
+                
+                try {
+                    if (this.audioContext && this.audioContext.state !== 'closed') {
+                        this.audioContext.close();
+                    }
+                    this.audioContext = null;
+                } catch (e) {
+                    console.log('AudioContext cleanup error (expected):', e);
+                }
+                
+                this.analyser = null;
+                console.log('🧹 Broken audio components cleaned up');
+            }
+
             forceResetState() {
                 // Emergency state reset - use if app gets stuck
                 console.log('🔧 Force resetting all states for recovery');

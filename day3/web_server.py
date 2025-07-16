@@ -11,6 +11,8 @@ import edge_tts
 import asyncio
 import io
 import uuid
+import base64
+from PIL import Image
 
 app = Flask(__name__)
 
@@ -24,36 +26,72 @@ def run_async(func):
     finally:
         loop.close()
 
-class ExaOneService:
-    """ExaOne Q&A Service"""
+class Qwen2VLService:
+    """Qwen2.5-VL Multimodal Service for both text and vision"""
     
-    def __init__(self, model_name="exaone3.5:2.4b"):
+    def __init__(self, model_name="qwen2.5-vl:latest"):
         self.model_name = model_name
-        print("🤖 ExaOne Q&A 서비스 초기화 중...")
+        print("🤖 Qwen2.5-VL 멀티모달 서비스 초기화 중...")
     
-    def answer_question(self, question, language="ko"):
-        """질문에 대한 답변 생성"""
+    def answer_question(self, question, language="ko", image_data=None):
+        """질문에 대한 답변 생성 (텍스트 또는 비전+텍스트)"""
         try:
-            print(f"🧠 ExaOne으로 질문 처리 중: {question}")
+            if image_data:
+                print(f"👁️ Qwen2.5-VL로 비전+텍스트 질문 처리 중: {question}")
+            else:
+                print(f"🧠 Qwen2.5-VL로 텍스트 질문 처리 중: {question}")
             
             if language == "ko":
-                prompt = f"""사용자의 발화에 대해서 따뜻한 답변을 한국어로 제공해주세요. 간결하면서도 완전한 답변을 해주세요.
+                if image_data:
+                    prompt = f"""이미지를 보고 사용자의 질문에 대해 따뜻하고 상세한 답변을 한국어로 제공해주세요. 이미지에서 보이는 것을 정확히 설명하고 질문에 답해주세요.
+
+질문: {question}
+
+답변:"""
+                else:
+                    prompt = f"""사용자의 질문에 대해서 따뜻한 답변을 한국어로 제공해주세요. 간결하면서도 완전한 답변을 해주세요.
 
 질문: {question}
 
 답변:"""
             else:
-                prompt = f"""Please provide an accurate and helpful answer to the following question. Keep it concise but complete.
+                if image_data:
+                    prompt = f"""Please analyze the image and provide an accurate, detailed answer to the user's question. Describe what you see and answer the question thoroughly.
+
+Question: {question}
+
+Answer:"""
+                else:
+                    prompt = f"""Please provide an accurate and helpful answer to the following question. Keep it concise but complete.
 
 Question: {question}
 
 Answer:"""
             
+            # Prepare message content
+            if image_data:
+                # For vision tasks, include both text and image
+                message_content = [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_data}"
+                        }
+                    }
+                ]
+            else:
+                # For text-only tasks
+                message_content = prompt
+            
             response = ollama.chat(
                 model=self.model_name,
                 messages=[{
                     'role': 'user',
-                    'content': prompt
+                    'content': message_content
                 }],
                 options={
                     'temperature': 0.3,
@@ -65,11 +103,14 @@ Answer:"""
             )
             
             answer = response['message']['content'].strip()
-            print(f"✅ ExaOne 답변 완료")
+            if image_data:
+                print(f"✅ Qwen2.5-VL 비전 답변 완료")
+            else:
+                print(f"✅ Qwen2.5-VL 텍스트 답변 완료")
             return answer
             
         except Exception as e:
-            print(f"❌ ExaOne 처리 오류: {e}")
+            print(f"❌ Qwen2.5-VL 처리 오류: {e}")
             traceback.print_exc()
             return f"죄송합니다. 답변 생성 중 오류가 발생했습니다: {str(e)}"
 
@@ -219,7 +260,7 @@ class WebWhisperSTT:
 
 # 전역 서비스 인스턴스
 stt_service = WebWhisperSTT()
-qa_service = ExaOneService()
+qa_service = Qwen2VLService()
 tts_service = TTSService()
 
 @app.route('/')
@@ -454,15 +495,131 @@ def get_voices():
         print(f"음성 목록 오류: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/analyze_image', methods=['POST'])
+def analyze_image():
+    """이미지 분석 API"""
+    try:
+        data = request.get_json()
+        if not data or 'image' not in data or 'question' not in data:
+            return jsonify({'success': False, 'error': '이미지와 질문이 필요합니다'})
+        
+        image_data = data['image']
+        question = data['question'].strip()
+        language = data.get('language', 'ko')
+        
+        if not question:
+            question = "이 이미지에 대해 설명해주세요." if language == 'ko' else "Please describe this image."
+        
+        print(f"🖼️ 이미지 분석 요청: {question}")
+        
+        # Remove data URL prefix if present
+        if image_data.startswith('data:image'):
+            image_data = image_data.split(',')[1]
+        
+        # Generate answer using Qwen2.5-VL with vision
+        answer = qa_service.answer_question(question, language, image_data)
+        
+        return jsonify({
+            'success': True,
+            'question': question,
+            'answer': answer,
+            'language': language
+        })
+        
+    except Exception as e:
+        print(f"이미지 분석 오류: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/vision_chat', methods=['POST'])
+def vision_chat():
+    """비전 + 음성 대화 API (STT + 이미지 분석 + TTS 통합)"""
+    try:
+        # 파일 및 데이터 확인
+        if 'audio' not in request.files:
+            return jsonify({'success': False, 'error': '오디오 파일이 없습니다'})
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'success': False, 'error': '파일이 선택되지 않았습니다'})
+        
+        # 이미지 데이터 확인
+        image_data = request.form.get('image')
+        if not image_data:
+            return jsonify({'success': False, 'error': '이미지 데이터가 없습니다'})
+        
+        # 설정 가져오기
+        language = request.form.get('language', 'ko')
+        model_size = request.form.get('model', 'base')
+        tts_enabled = request.form.get('tts_enabled', 'true').lower() == 'true'
+        tts_gender = request.form.get('tts_gender', 'female')
+        
+        print(f"👁️🎙️ 비전 + 음성 대화 요청: 언어={language}, TTS={tts_enabled}")
+        
+        # 1단계: 음성 인식
+        audio_data = stt_service.process_webm_audio(audio_file)
+        if audio_data is None:
+            return jsonify({'success': False, 'error': '오디오 처리 실패'})
+        
+        text = stt_service.transcribe_audio(audio_data, language, model_size)
+        if text is None:
+            return jsonify({'success': False, 'error': '음성 인식 실패'})
+        
+        print(f"📝 인식된 질문: {text}")
+        
+        # Remove data URL prefix if present
+        if image_data.startswith('data:image'):
+            image_data = image_data.split(',')[1]
+        
+        # 2단계: Qwen2.5-VL로 비전 분석
+        answer = qa_service.answer_question(text, language, image_data)
+        
+        print(f"🤖 생성된 답변: {answer}")
+        
+        # 3단계: TTS 변환 (선택적)
+        audio_url = None
+        if tts_enabled:
+            try:
+                audio_data_tts = run_async(tts_service.text_to_speech(answer, language, tts_gender))
+                if audio_data_tts:
+                    # 오디오 ID 생성 및 임시 저장
+                    audio_id = str(uuid.uuid4())
+                    temp_dir = tempfile.gettempdir()
+                    audio_path = os.path.join(temp_dir, f"tts_{audio_id}.mp3")
+                    
+                    with open(audio_path, 'wb') as f:
+                        f.write(audio_data_tts)
+                    
+                    audio_url = f'/audio/{audio_id}'
+                    print(f"🔊 TTS 오디오 생성 완료: {audio_url}")
+            except Exception as e:
+                print(f"⚠️ TTS 변환 오류 (계속 진행): {e}")
+        
+        return jsonify({
+            'success': True,
+            'question': text,
+            'answer': answer,
+            'language': language,
+            'model': model_size,
+            'audio_url': audio_url,
+            'tts_enabled': tts_enabled,
+            'has_vision': True
+        })
+        
+    except Exception as e:
+        print(f"비전 + 음성 대화 오류: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/status')
 def status():
     """서비스 상태 확인"""
-    # ExaOne 모델 상태 확인
-    exaone_available = False
+    # Qwen2.5-VL 모델 상태 확인
+    qwen2vl_available = False
     try:
         models_response = ollama.list()
         model_names = [model.model for model in models_response.models]
-        exaone_available = 'exaone3.5:2.4b' in model_names
+        qwen2vl_available = 'qwen2.5-vl:latest' in model_names
     except:
         pass
     
@@ -471,8 +628,9 @@ def status():
         'loaded_models': list(stt_service.models.keys()),
         'available_models': ['base', 'small', 'medium', 'large'],
         'cuda_available': torch.cuda.is_available(),
-        'exaone_available': exaone_available,
-        'qa_service': 'ExaOne Q&A',
+        'qwen2vl_available': qwen2vl_available,
+        'qa_service': 'Qwen2.5-VL Multimodal',
+        'vision_enabled': True,
         'vad_enabled': True,
         'tts_service': 'Edge-TTS',
         'tts_voices': tts_service.get_available_voices()
@@ -484,10 +642,11 @@ def health():
     return jsonify({'status': 'healthy'})
 
 if __name__ == '__main__':
-    print("🚀 Voice Q&A with ExaOne + TTS 서버 시작 중...")
+    print("🚀 Multimodal AI Assistant with Qwen2.5-VL 서버 시작 중...")
     print("📱 브라우저에서 http://localhost:5000 접속")
     print("🎤 마이크 권한을 허용해주세요 (VAD 자동 감지)")
-    print("🤖 음성으로 질문하면 ExaOne이 답변합니다")
+    print("👁️ 카메라 권한을 허용해주세요 (비전 분석)")
+    print("🤖 음성+비전으로 질문하면 Qwen2.5-VL이 답변합니다")
     print("🔊 TTS로 답변을 음성으로 들을 수 있습니다")
     print("⚡ CUDA 사용 가능:", torch.cuda.is_available())
     

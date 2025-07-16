@@ -17,7 +17,7 @@ def check_dependencies():
     
     # Python 패키지 확인
     required_packages = [
-        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad', 'ollama', 'edge_tts'
+        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad', 'ollama', 'edge_tts', 'opencv-python', 'pillow'
     ]
     
     missing_packages = []
@@ -52,11 +52,11 @@ def check_ollama_service():
     
     try:
         import ollama
-        # ExaOne 모델 확인
+        # Qwen2.5-VL 모델 확인
         models_response = ollama.list()
         model_names = [model.model for model in models_response.models]
         
-        required_model = 'exaone3.5:2.4b'
+        required_model = 'qwen2.5-vl:latest'
         if required_model not in model_names:
             print(f"❌ {required_model} 모델이 없습니다")
             print(f"다음 명령으로 설치하세요: ollama pull {required_model}")
@@ -72,7 +72,7 @@ def check_ollama_service():
 
 def run_server():
     """웹 서버 실행"""
-    print("\n🚀 Voice Q&A with ExaOne 서버 시작...")
+    print("\n🚀 Multimodal AI Assistant with Qwen2.5-VL 서버 시작...")
     
     # 현재 디렉토리에서 실행
     os.chdir(Path(__file__).parent)
@@ -82,7 +82,8 @@ def run_server():
         from web_server import app
         print("📱 브라우저에서 http://localhost:5000 접속하세요")
         print("🎤 마이크 권한을 허용해주세요 (VAD 자동 감지)")
-        print("🤖 음성으로 질문하면 ExaOne이 답변합니다")
+        print("👁️ 카메라 권한을 허용해주세요 (비전 분석)")
+        print("🤖 음성+비전으로 질문하면 Qwen2.5-VL이 답변합니다")
         print("🔊 TTS로 답변을 음성으로 들을 수 있습니다")
         print("💡 Ctrl+C로 종료")
         
@@ -101,7 +102,7 @@ def run_server():
 
 def main():
     """메인 함수"""
-    print("🎤 Voice Q&A with ExaOne + TTS - Complete Voice Assistant")
+    print("🎤👁️ Multimodal AI Assistant with Qwen2.5-VL - Voice + Vision")
     print("=" * 60)
     
     if not check_dependencies():
@@ -109,7 +110,7 @@ def main():
         sys.exit(1)
     
     if not check_ollama_service():
-        print("\n❌ Ollama 서비스 확인 실패. ExaOne 모델을 설치하세요.")
+        print("\n❌ Ollama 서비스 확인 실패. Qwen2.5-VL 모델을 설치하세요.")
         sys.exit(1)
     
     print("\n✅ 모든 의존성 및 서비스 확인 완료!")

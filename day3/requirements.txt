@@ -5,3 +5,7 @@ torch
 torchaudio
 matplotlib
 webrtcvad
+ollama
+edge_tts
+opencv-python
+pillow

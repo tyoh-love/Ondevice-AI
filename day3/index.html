@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voice Q&A with ExaOne + TTS - Complete Voice Assistant</title>
+    <title>Multimodal AI Assistant with Qwen2.5-VL - Voice + Vision</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -284,6 +284,76 @@
             font-style: italic;
         }
         
+        .camera-container {
+            display: none;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .camera-preview {
+            width: 100%;
+            max-width: 400px;
+            height: 300px;
+            background: #000;
+            border-radius: 10px;
+            margin: 0 auto 15px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #cameraVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 10px;
+        }
+        
+        .camera-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+        
+        .camera-controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .capture-btn {
+            background: linear-gradient(45deg, #6c5ce7, #a29bfe);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        
+        .capture-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4);
+        }
+        
+        .captured-image {
+            max-width: 200px;
+            max-height: 150px;
+            border-radius: 10px;
+            margin: 10px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+        }
+
         .settings {
             margin-bottom: 20px;
             display: flex;
@@ -305,12 +375,29 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎤 Voice Q&A with ExaOne + TTS</h1>
+        <h1>🎤👁️ Multimodal AI with Qwen2.5-VL</h1>
         
         <div class="qa-mode">
             <button id="sttModeBtn" class="mode-btn active">STT 모드</button>
-            <button id="qaModeBtn" class="mode-btn">Q&A 모드</button>
+            <button id="qaModeBtn" class="mode-btn">음성 채팅</button>
             <button id="vadModeBtn" class="mode-btn">VAD 자동 모드</button>
+            <button id="visionModeBtn" class="mode-btn">👁️ 비전 + 음성</button>
+        </div>
+        
+        <div class="camera-container" id="cameraContainer">
+            <div class="camera-preview">
+                <video id="cameraVideo" autoplay muted playsinline></video>
+                <div class="camera-overlay" id="cameraStatus">카메라 초기화 중...</div>
+            </div>
+            <div class="camera-controls">
+                <button id="startCameraBtn" class="capture-btn">📹 카메라 시작</button>
+                <button id="captureBtn" class="capture-btn" disabled>📸 캡처</button>
+                <button id="stopCameraBtn" class="capture-btn" disabled>🚫 카메라 중지</button>
+                <select id="cameraSelect" style="margin-left: 10px;">
+                    <option value="">카메라 선택...</option>
+                </select>
+            </div>
+            <div id="capturedImages"></div>
         </div>
         
         <div class="settings">
@@ -388,7 +475,11 @@
         </div>
         
         <div id="conversation" style="display: none;">
-            <p><em>음성으로 질문하면 ExaOne이 답변해드립니다...</em></p>
+            <p><em>음성으로 질문하면 Qwen2.5-VL이 답변해드립니다...</em></p>
+        </div>
+        
+        <div id="visionConversation" style="display: none;">
+            <p><em>카메라로 보이는 것에 대해 음성으로 질문해보세요...</em></p>
         </div>
         
         <!-- Hidden audio element for TTS playback -->
@@ -406,8 +497,13 @@
                 this.stream = null;
                 this.vadEnabled = false;
                 this.vadPausedForTTS = false;  // Pause VAD during TTS playback
-                this.currentMode = 'stt'; // 'stt', 'qa', 'vad'
+                this.currentMode = 'stt'; // 'stt', 'qa', 'vad', 'vision'
                 this.vadThreshold = 0.01;
+                
+                // Camera related properties
+                this.cameraStream = null;
+                this.cameraActive = false;
+                this.currentImage = null;
                 this.vadSilenceCounter = 0;
                 this.vadSilenceThreshold = 75; // ~3초 (40ms * 75) - 더 안정적
                 this.vadSpeakingCounter = 0;
@@ -450,6 +546,18 @@
                 this.sttModeBtn = document.getElementById('sttModeBtn');
                 this.qaModeBtn = document.getElementById('qaModeBtn');
                 this.vadModeBtn = document.getElementById('vadModeBtn');
+                this.visionModeBtn = document.getElementById('visionModeBtn');
+                
+                // Camera elements
+                this.cameraContainer = document.getElementById('cameraContainer');
+                this.cameraVideo = document.getElementById('cameraVideo');
+                this.cameraStatus = document.getElementById('cameraStatus');
+                this.startCameraBtn = document.getElementById('startCameraBtn');
+                this.captureBtn = document.getElementById('captureBtn');
+                this.stopCameraBtn = document.getElementById('stopCameraBtn');
+                this.cameraSelect = document.getElementById('cameraSelect');
+                this.capturedImages = document.getElementById('capturedImages');
+                this.visionConversation = document.getElementById('visionConversation');
                 
                 // TTS elements
                 this.ttsToggle = document.getElementById('ttsToggle');
@@ -479,6 +587,12 @@
                 this.sttModeBtn.addEventListener('click', () => this.switchMode('stt'));
                 this.qaModeBtn.addEventListener('click', () => this.switchMode('qa'));
                 this.vadModeBtn.addEventListener('click', () => this.switchMode('vad'));
+                this.visionModeBtn.addEventListener('click', () => this.switchMode('vision'));
+                
+                // Camera controls
+                this.startCameraBtn.addEventListener('click', () => this.startCamera());
+                this.captureBtn.addEventListener('click', () => this.captureImage());
+                this.stopCameraBtn.addEventListener('click', () => this.stopCamera());
                 
                 // VAD sensitivity
                 this.vadSensitivity.addEventListener('change', () => this.updateVADSensitivity());
@@ -761,17 +875,21 @@
                 // Update UI
                 document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
                 
+                // Hide all conversation containers
+                this.transcription.style.display = 'none';
+                this.conversation.style.display = 'none';
+                this.visionConversation.style.display = 'none';
+                this.cameraContainer.style.display = 'none';
+                
                 if (mode === 'stt') {
                     this.sttModeBtn.classList.add('active');
                     this.transcription.style.display = 'block';
-                    this.conversation.style.display = 'none';
                     this.startBtn.style.display = 'inline-block';
                     this.stopBtn.style.display = 'inline-block';
                     this.vadToggleBtn.style.display = 'none';
                     if (this.vadEnabled) this.stopVAD();
                 } else if (mode === 'qa') {
                     this.qaModeBtn.classList.add('active');
-                    this.transcription.style.display = 'none';
                     this.conversation.style.display = 'block';
                     this.startBtn.style.display = 'inline-block';
                     this.stopBtn.style.display = 'inline-block';
@@ -779,11 +897,20 @@
                     if (this.vadEnabled) this.stopVAD();
                 } else if (mode === 'vad') {
                     this.vadModeBtn.classList.add('active');
-                    this.transcription.style.display = 'none';
                     this.conversation.style.display = 'block';
                     this.startBtn.style.display = 'none';
                     this.stopBtn.style.display = 'none';
                     this.vadToggleBtn.style.display = 'inline-block';
+                } else if (mode === 'vision') {
+                    this.visionModeBtn.classList.add('active');
+                    this.visionConversation.style.display = 'block';
+                    this.cameraContainer.style.display = 'block';
+                    this.startBtn.style.display = 'inline-block';
+                    this.stopBtn.style.display = 'inline-block';
+                    this.vadToggleBtn.style.display = 'none';
+                    if (this.vadEnabled) this.stopVAD();
+                    // Initialize camera devices list
+                    this.initializeCameraDevices();
                 }
                 
                 this.status.textContent = `${mode.toUpperCase()} 모드 활성화`;
@@ -898,6 +1025,16 @@
                     let endpoint = '/transcribe';
                     if (this.currentMode === 'qa' || this.currentMode === 'vad') {
                         endpoint = '/chat';
+                    } else if (this.currentMode === 'vision') {
+                        endpoint = '/vision_chat';
+                        // Add current camera image if available
+                        if (this.currentImage) {
+                            formData.append('image', this.currentImage);
+                        } else {
+                            this.status.textContent = '카메라 이미지를 먼저 캡처해주세요';
+                            this.isProcessing = false;
+                            return;
+                        }
                     }
                     
                     const response = await fetch(endpoint, {
@@ -913,6 +1050,17 @@
                             // Reset processing state for STT mode
                             this.isProcessing = false;
                             this.updateVADStatus('listening', 'VAD 활성');
+                        } else if (this.currentMode === 'vision') {
+                            this.displayVisionConversation(result.question, result.answer, result.audio_url, this.currentImage);
+                            // Auto-play TTS if available
+                            if (result.audio_url && this.ttsEnabled) {
+                                await this.playTTS(result.audio_url);
+                                // Processing state will be reset when TTS ends
+                            } else {
+                                // Reset processing state if no TTS
+                                this.isProcessing = false;
+                                this.updateVADStatus('listening', 'VAD 활성');
+                            }
                         } else {
                             this.displayConversation(result.question, result.answer, result.audio_url);
                             // Auto-play TTS if available
@@ -984,7 +1132,7 @@
                 }
                 
                 answerDiv.innerHTML = `
-                    <div class="timestamp">[${timestamp}] ExaOne 답변</div>
+                    <div class="timestamp">[${timestamp}] Qwen2.5-VL 답변</div>
                     <div>${answer}</div>
                     ${ttsStatus}
                 `;
@@ -996,13 +1144,162 @@
                 this.conversation.scrollTop = 0;
             }
             
+            displayVisionConversation(question, answer, audioUrl = null, imageData = null) {
+                const timestamp = new Date().toLocaleTimeString();
+                const currentContent = this.visionConversation.innerHTML;
+                
+                if (currentContent.includes('<em>')) {
+                    this.visionConversation.innerHTML = '';
+                }
+                
+                const questionDiv = document.createElement('div');
+                questionDiv.className = 'question-item';
+                
+                let imageHtml = '';
+                if (imageData) {
+                    imageHtml = `<img src="${imageData}" class="captured-image" style="display: block; margin: 10px 0;">`;
+                }
+                
+                questionDiv.innerHTML = `
+                    <div class="timestamp">[${timestamp}] 👁️ 비전 질문</div>
+                    ${imageHtml}
+                    <div>${question}</div>
+                `;
+                
+                const answerDiv = document.createElement('div');
+                answerDiv.className = 'answer-item';
+                
+                // Simple status indicator for TTS (no manual controls)
+                let ttsStatus = '';
+                if (audioUrl) {
+                    ttsStatus = `
+                        <div class="tts-status">🔊 음성 답변 자동 재생됨</div>
+                    `;
+                }
+                
+                answerDiv.innerHTML = `
+                    <div class="timestamp">[${timestamp}] Qwen2.5-VL 비전 답변</div>
+                    <div>${answer}</div>
+                    ${ttsStatus}
+                `;
+                
+                this.visionConversation.insertBefore(answerDiv, this.visionConversation.firstChild);
+                this.visionConversation.insertBefore(questionDiv, this.visionConversation.firstChild);
+                
+                // Auto-scroll to top
+                this.visionConversation.scrollTop = 0;
+            }
+
             clearContent() {
                 if (this.currentMode === 'stt') {
                     this.transcription.innerHTML = '<p><em>음성 인식 결과가 여기에 표시됩니다...</em></p>';
+                } else if (this.currentMode === 'vision') {
+                    this.visionConversation.innerHTML = '<p><em>카메라로 보이는 것에 대해 음성으로 질문해보세요...</em></p>';
                 } else {
-                    this.conversation.innerHTML = '<p><em>음성으로 질문하면 ExaOne이 답변해드립니다...</em></p>';
+                    this.conversation.innerHTML = '<p><em>음성으로 질문하면 Qwen2.5-VL이 답변해드립니다...</em></p>';
                 }
                 this.status.textContent = '초기화 완료';
+            }
+            
+            // Camera Methods
+            async initializeCameraDevices() {
+                try {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                    
+                    this.cameraSelect.innerHTML = '<option value="">카메라 선택...</option>';
+                    videoDevices.forEach(device => {
+                        const option = document.createElement('option');
+                        option.value = device.deviceId;
+                        option.textContent = device.label || `카메라 ${device.deviceId.slice(0, 8)}`;
+                        this.cameraSelect.appendChild(option);
+                    });
+                    
+                    this.cameraStatus.textContent = `${videoDevices.length}개의 카메라 발견`;
+                } catch (error) {
+                    console.error('카메라 장치 조회 오류:', error);
+                    this.cameraStatus.textContent = '카메라 장치 조회 실패';
+                }
+            }
+            
+            async startCamera() {
+                try {
+                    const selectedDeviceId = this.cameraSelect.value;
+                    const constraints = {
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined
+                        }
+                    };
+                    
+                    this.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    this.cameraVideo.srcObject = this.cameraStream;
+                    this.cameraActive = true;
+                    
+                    this.startCameraBtn.disabled = true;
+                    this.captureBtn.disabled = false;
+                    this.stopCameraBtn.disabled = false;
+                    
+                    this.cameraStatus.textContent = '카메라 활성 - 캡처 준비됨';
+                    
+                } catch (error) {
+                    console.error('카메라 시작 오류:', error);
+                    this.cameraStatus.textContent = '카메라 시작 실패';
+                }
+            }
+            
+            captureImage() {
+                if (!this.cameraActive || !this.cameraStream) {
+                    this.cameraStatus.textContent = '카메라가 활성화되지 않음';
+                    return;
+                }
+                
+                try {
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    
+                    canvas.width = this.cameraVideo.videoWidth;
+                    canvas.height = this.cameraVideo.videoHeight;
+                    
+                    context.drawImage(this.cameraVideo, 0, 0, canvas.width, canvas.height);
+                    
+                    this.currentImage = canvas.toDataURL('image/jpeg', 0.8);
+                    
+                    // Show captured image preview
+                    const imgElement = document.createElement('img');
+                    imgElement.src = this.currentImage;
+                    imgElement.className = 'captured-image';
+                    imgElement.style.display = 'block';
+                    imgElement.style.margin = '10px auto';
+                    
+                    this.capturedImages.innerHTML = '';
+                    this.capturedImages.appendChild(imgElement);
+                    
+                    this.cameraStatus.textContent = '이미지 캡처 완료 - 음성 질문 가능';
+                    
+                } catch (error) {
+                    console.error('이미지 캡처 오류:', error);
+                    this.cameraStatus.textContent = '이미지 캡처 실패';
+                }
+            }
+            
+            stopCamera() {
+                if (this.cameraStream) {
+                    this.cameraStream.getTracks().forEach(track => track.stop());
+                    this.cameraStream = null;
+                }
+                
+                this.cameraVideo.srcObject = null;
+                this.cameraActive = false;
+                this.currentImage = null;
+                
+                this.startCameraBtn.disabled = false;
+                this.captureBtn.disabled = true;
+                this.stopCameraBtn.disabled = true;
+                
+                this.cameraStatus.textContent = '카메라 중지됨';
+                this.capturedImages.innerHTML = '';
             }
             
             // VAD Methods

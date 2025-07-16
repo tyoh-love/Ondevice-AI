@@ -17,7 +17,7 @@ def check_dependencies():
     
     # Python 패키지 확인
     required_packages = [
-        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad', 'ollama', 'edge_tts', 'opencv-python', 'pillow'
+        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad', 'ollama', 'edge_tts', 'cv2', 'PIL'
     ]
     
     missing_packages = []
@@ -56,7 +56,7 @@ def check_ollama_service():
         models_response = ollama.list()
         model_names = [model.model for model in models_response.models]
         
-        required_model = 'qwen2.5-vl:latest'
+        required_model = 'qwen2.5vl:3b'
         if required_model not in model_names:
             print(f"❌ {required_model} 모델이 없습니다")
             print(f"다음 명령으로 설치하세요: ollama pull {required_model}")

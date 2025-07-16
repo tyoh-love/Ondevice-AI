@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voice Q&A with ExaOne - Natural Voice Interaction</title>
+    <title>Voice Q&A with ExaOne + TTS - Complete Voice Assistant</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -219,6 +219,71 @@
             margin-bottom: 5px;
         }
         
+        .tts-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .tts-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 15px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        
+        .toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 25px;
+            background: #ccc;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .toggle-switch.active {
+            background: #4CAF50;
+        }
+        
+        .toggle-slider {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 21px;
+            height: 21px;
+            background: white;
+            border-radius: 50%;
+            transition: transform 0.3s;
+        }
+        
+        .toggle-switch.active .toggle-slider {
+            transform: translateX(25px);
+        }
+        
+        
+        .volume-control {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .volume-slider {
+            width: 80px;
+        }
+        
+        .tts-status {
+            font-size: 12px;
+            color: #f39c12;
+            font-style: italic;
+        }
+        
         .settings {
             margin-bottom: 20px;
             display: flex;
@@ -240,7 +305,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎤 Voice Q&A with ExaOne</h1>
+        <h1>🎤 Voice Q&A with ExaOne + TTS</h1>
         
         <div class="qa-mode">
             <button id="sttModeBtn" class="mode-btn active">STT 모드</button>
@@ -267,6 +332,29 @@
                     <option value="large">Large</option>
                 </select>
             </label>
+        </div>
+        
+        <div class="tts-controls">
+            <div class="tts-toggle">
+                <span>🔊 TTS 자동재생</span>
+                <div class="toggle-switch active" id="ttsToggle">
+                    <div class="toggle-slider"></div>
+                </div>
+            </div>
+            
+            <label>
+                TTS 음성:
+                <select id="ttsGenderSelect">
+                    <option value="female">여성</option>
+                    <option value="male">남성</option>
+                </select>
+            </label>
+            
+            <div class="volume-control">
+                <span>🔊</span>
+                <input type="range" id="volumeSlider" class="volume-slider" min="0" max="100" value="80">
+                <span id="volumeValue">80%</span>
+            </div>
         </div>
         
         <div class="vad-controls">
@@ -302,6 +390,9 @@
         <div id="conversation" style="display: none;">
             <p><em>음성으로 질문하면 ExaOne이 답변해드립니다...</em></p>
         </div>
+        
+        <!-- Hidden audio element for TTS playback -->
+        <audio id="ttsAudio" preload="none" style="display: none;"></audio>
     </div>
 
     <script>
@@ -314,17 +405,32 @@
                 this.isRecording = false;
                 this.stream = null;
                 this.vadEnabled = false;
+                this.vadPausedForTTS = false;  // Pause VAD during TTS playback
                 this.currentMode = 'stt'; // 'stt', 'qa', 'vad'
                 this.vadThreshold = 0.01;
                 this.vadSilenceCounter = 0;
-                this.vadSilenceThreshold = 50; // ~2초 (40ms * 50)
+                this.vadSilenceThreshold = 75; // ~3초 (40ms * 75) - 더 안정적
                 this.vadSpeakingCounter = 0;
-                this.vadSpeakingThreshold = 5; // ~200ms
+                this.vadSpeakingThreshold = 7; // ~280ms - 더 안정적 음성 감지
                 this.vadAnimationFrame = null;
+                
+                // TTS related properties
+                this.ttsEnabled = true;
+                this.ttsAudio = null;
+                this.currentVolume = 0.8;
+                this.ttsAudioContext = null;
+                this.audioInitialized = false;
+                
+                // Audio session management
+                this.currentAudioSource = null;
+                this.isPlayingTTS = false;
+                this.audioSources = [];  // Track multiple audio sources
+                this.isProcessing = false;  // Prevent overlapping requests
                 
                 this.initializeElements();
                 this.initializeVisualizer();
                 this.setupEventListeners();
+                this.initializeTTS();
             }
             
             initializeElements() {
@@ -344,6 +450,13 @@
                 this.sttModeBtn = document.getElementById('sttModeBtn');
                 this.qaModeBtn = document.getElementById('qaModeBtn');
                 this.vadModeBtn = document.getElementById('vadModeBtn');
+                
+                // TTS elements
+                this.ttsToggle = document.getElementById('ttsToggle');
+                this.ttsGenderSelect = document.getElementById('ttsGenderSelect');
+                this.volumeSlider = document.getElementById('volumeSlider');
+                this.volumeValue = document.getElementById('volumeValue');
+                this.ttsAudio = document.getElementById('ttsAudio');
             }
             
             initializeVisualizer() {
@@ -369,6 +482,277 @@
                 
                 // VAD sensitivity
                 this.vadSensitivity.addEventListener('change', () => this.updateVADSensitivity());
+                
+                // TTS controls
+                this.ttsToggle.addEventListener('click', () => this.toggleTTS());
+                this.volumeSlider.addEventListener('input', () => this.updateVolume());
+            }
+            
+            initializeTTS() {
+                // Initialize basic HTML5 audio as fallback
+                this.ttsAudio.volume = this.currentVolume;
+                
+                // Basic event listeners for HTML5 audio fallback
+                this.ttsAudio.addEventListener('ended', () => {
+                    this.status.textContent = '✅ TTS 재생 완료';
+                    setTimeout(() => {
+                        if (this.vadEnabled) {
+                            this.updateVADStatus('listening', 'VAD 활성');
+                        } else {
+                            this.status.textContent = '준비 완료';
+                        }
+                    }, 1000);
+                });
+            }
+            
+            async initializeAudioSystem() {
+                if (this.audioInitialized) return true;
+                
+                try {
+                    // Initialize Web Audio API context for guaranteed playback
+                    this.ttsAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    
+                    // Resume audio context if suspended (browser auto-play policy)
+                    if (this.ttsAudioContext.state === 'suspended') {
+                        await this.ttsAudioContext.resume();
+                    }
+                    
+                    this.audioInitialized = true;
+                    console.log('🔊 Audio system initialized successfully');
+                    return true;
+                } catch (error) {
+                    console.error('Audio system initialization failed:', error);
+                    return false;
+                }
+            }
+            
+            stopAllAudio() {
+                console.log('🛑 Stopping all audio sources');
+                
+                // Stop all Web Audio API sources
+                this.audioSources.forEach(source => {
+                    try {
+                        if (source && source.stop) {
+                            source.stop();
+                        }
+                    } catch (e) {
+                        // Source might already be stopped
+                    }
+                });
+                this.audioSources = [];
+                
+                // Stop HTML5 audio
+                try {
+                    this.ttsAudio.pause();
+                    this.ttsAudio.currentTime = 0;
+                } catch (e) {
+                    // Audio might not be loaded
+                }
+                
+                // Reset audio state
+                this.currentAudioSource = null;
+                this.isPlayingTTS = false;
+            }
+            
+            pauseVADForTTS() {
+                if (this.vadEnabled) {
+                    console.log('⏸️ Pausing VAD during TTS playback');
+                    this.vadPausedForTTS = true;
+                    // Don't stop VAD completely, just pause processing
+                }
+            }
+            
+            resumeVADAfterTTS() {
+                if (this.vadEnabled && this.vadPausedForTTS) {
+                    console.log('▶️ Resuming VAD after TTS');
+                    setTimeout(() => {
+                        this.vadPausedForTTS = false;
+                        this.updateVADStatus('listening', 'VAD 활성');
+                    }, 1000); // 1 second delay after TTS ends
+                }
+            }
+            
+            toggleTTS() {
+                this.ttsEnabled = !this.ttsEnabled;
+                this.ttsToggle.classList.toggle('active', this.ttsEnabled);
+                console.log('TTS 토글:', this.ttsEnabled ? '활성화' : '비활성화');
+            }
+            
+            updateVolume() {
+                this.currentVolume = this.volumeSlider.value / 100;
+                this.ttsAudio.volume = this.currentVolume;
+                this.volumeValue.textContent = `${this.volumeSlider.value}%`;
+                
+                // Also update Web Audio API gain if context exists
+                if (this.ttsAudioContext && this.currentGainNode) {
+                    this.currentGainNode.gain.value = this.currentVolume;
+                }
+            }
+            
+            async playTTS(audioUrl) {
+                if (!this.ttsEnabled || !audioUrl || this.isPlayingTTS) return;
+                
+                // Stop all previous audio first
+                this.stopAllAudio();
+                
+                // Set TTS playing state
+                this.isPlayingTTS = true;
+                
+                // Pause VAD during TTS playback to prevent feedback
+                this.pauseVADForTTS();
+                
+                this.status.textContent = '🔊 TTS 재생 중...';
+                
+                try {
+                    // Ensure audio system is initialized
+                    await this.initializeAudioSystem();
+                    
+                    // Method 1: Try Web Audio API for guaranteed playback
+                    if (this.audioInitialized && this.ttsAudioContext) {
+                        await this.playWithWebAudio(audioUrl);
+                    } else {
+                        // Method 2: Fallback to HTML5 audio with aggressive auto-play
+                        await this.playWithHTML5Audio(audioUrl);
+                    }
+                    
+                } catch (error) {
+                    console.error('TTS 재생 오류:', error);
+                    this.status.textContent = '❌ TTS 재생 실패';
+                    
+                    // Reset all states on error
+                    this.isPlayingTTS = false;
+                    this.isProcessing = false;
+                    this.resumeVADAfterTTS();
+                    
+                    // Restore status after error
+                    setTimeout(() => {
+                        if (this.vadEnabled) {
+                            this.updateVADStatus('listening', 'VAD 활성');
+                        } else {
+                            this.status.textContent = '준비 완료';
+                        }
+                    }, 2000);
+                }
+            }
+            
+            async playWithWebAudio(audioUrl) {
+                try {
+                    // Fetch audio data
+                    const response = await fetch(audioUrl);
+                    const arrayBuffer = await response.arrayBuffer();
+                    
+                    // Decode audio data
+                    const audioBuffer = await this.ttsAudioContext.decodeAudioData(arrayBuffer);
+                    
+                    // Create audio source
+                    const source = this.ttsAudioContext.createBufferSource();
+                    const gainNode = this.ttsAudioContext.createGain();
+                    
+                    // Track this audio source
+                    this.audioSources.push(source);
+                    this.currentAudioSource = source;
+                    
+                    // Set volume
+                    gainNode.gain.value = this.currentVolume;
+                    
+                    // Connect audio graph
+                    source.buffer = audioBuffer;
+                    source.connect(gainNode);
+                    gainNode.connect(this.ttsAudioContext.destination);
+                    
+                    // Handle playback end
+                    source.onended = () => {
+                        console.log('🔊 TTS playback ended');
+                        
+                        // Reset all states
+                        this.isPlayingTTS = false;
+                        this.isProcessing = false;  // Reset processing state
+                        
+                        // Remove from audio sources
+                        const index = this.audioSources.indexOf(source);
+                        if (index > -1) {
+                            this.audioSources.splice(index, 1);
+                        }
+                        
+                        // Resume VAD after TTS
+                        this.resumeVADAfterTTS();
+                        
+                        this.status.textContent = '✅ TTS 재생 완료';
+                        setTimeout(() => {
+                            if (this.vadEnabled && !this.vadPausedForTTS) {
+                                this.updateVADStatus('listening', 'VAD 활성');
+                            } else if (!this.vadEnabled) {
+                                this.status.textContent = '준비 완료';
+                            }
+                        }, 1000);
+                    };
+                    
+                    // Start playback immediately
+                    source.start(0);
+                    console.log('🔊 Web Audio API playback started');
+                    
+                } catch (error) {
+                    console.error('Web Audio playback failed:', error);
+                    // Fallback to HTML5 audio
+                    await this.playWithHTML5Audio(audioUrl);
+                }
+            }
+            
+            async playWithHTML5Audio(audioUrl) {
+                try {
+                    // Configure audio for aggressive auto-play
+                    this.ttsAudio.src = audioUrl;
+                    this.ttsAudio.volume = this.currentVolume;
+                    this.ttsAudio.autoplay = true;
+                    this.ttsAudio.preload = 'auto';
+                    
+                    // Setup proper event handlers for session management
+                    const handleAudioEnd = () => {
+                        console.log('🔊 HTML5 TTS playback ended');
+                        
+                        // Reset all states
+                        this.isPlayingTTS = false;
+                        this.isProcessing = false;  // Reset processing state
+                        
+                        // Resume VAD after TTS
+                        this.resumeVADAfterTTS();
+                        
+                        this.status.textContent = '✅ TTS 재생 완료';
+                        setTimeout(() => {
+                            if (this.vadEnabled && !this.vadPausedForTTS) {
+                                this.updateVADStatus('listening', 'VAD 활성');
+                            } else if (!this.vadEnabled) {
+                                this.status.textContent = '준비 완료';
+                            }
+                        }, 1000);
+                        
+                        // Remove event listener
+                        this.ttsAudio.removeEventListener('ended', handleAudioEnd);
+                    };
+                    
+                    this.ttsAudio.addEventListener('ended', handleAudioEnd);
+                    
+                    // Force load and play
+                    this.ttsAudio.load();
+                    
+                    // Multiple play attempts for different browsers
+                    const playPromise = this.ttsAudio.play();
+                    
+                    if (playPromise !== undefined) {
+                        await playPromise;
+                        console.log('🔊 HTML5 Audio playback started');
+                    }
+                    
+                } catch (error) {
+                    console.error('HTML5 Audio playback failed:', error);
+                    
+                    // Reset all states on error
+                    this.isPlayingTTS = false;
+                    this.isProcessing = false;
+                    this.resumeVADAfterTTS();
+                    
+                    throw error;
+                }
             }
             
             switchMode(mode) {
@@ -410,18 +794,21 @@
                 switch(sensitivity) {
                     case 'low':
                         this.vadThreshold = 0.005;
-                        this.vadSilenceThreshold = 75; // 3초
+                        this.vadSilenceThreshold = 100; // 4초 - 더 긴 침묵 대기
+                        this.vadSpeakingThreshold = 10; // 더 긴 음성 감지 필요
                         break;
                     case 'medium':
                         this.vadThreshold = 0.01;
-                        this.vadSilenceThreshold = 50; // 2초
+                        this.vadSilenceThreshold = 75; // 3초 - 안정적인 침묵 감지
+                        this.vadSpeakingThreshold = 7; // 적당한 음성 감지
                         break;
                     case 'high':
                         this.vadThreshold = 0.02;
-                        this.vadSilenceThreshold = 25; // 1초
+                        this.vadSilenceThreshold = 50; // 2초
+                        this.vadSpeakingThreshold = 5; // 빠른 음성 감지
                         break;
                 }
-                console.log(`VAD 감도 변경: ${sensitivity}, 임계값: ${this.vadThreshold}`);
+                console.log(`VAD 감도 변경: ${sensitivity}, 임계값: ${this.vadThreshold}, 침묵: ${this.vadSilenceThreshold}`);
             }
             
             async startRecording() {
@@ -434,6 +821,9 @@
                             noiseSuppression: true
                         }
                     });
+                    
+                    // Initialize audio system after user gesture (microphone permission)
+                    await this.initializeAudioSystem();
                     
                     this.audioContext = new AudioContext({ sampleRate: 16000 });
                     this.analyser = this.audioContext.createAnalyser();
@@ -487,6 +877,13 @@
             }
             
             async processAudio() {
+                // Prevent multiple simultaneous requests
+                if (this.isProcessing) {
+                    console.log('⚠️ Already processing, skipping request');
+                    return;
+                }
+                
+                this.isProcessing = true;
                 this.updateVADStatus('processing', '처리 중');
                 
                 const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
@@ -494,6 +891,8 @@
                 formData.append('audio', audioBlob);
                 formData.append('language', this.languageSelect.value);
                 formData.append('model', this.modelSelect.value);
+                formData.append('tts_enabled', this.ttsEnabled.toString());
+                formData.append('tts_gender', this.ttsGenderSelect.value);
                 
                 try {
                     let endpoint = '/transcribe';
@@ -511,17 +910,30 @@
                     if (result.success) {
                         if (this.currentMode === 'stt') {
                             this.displayTranscription(result.text);
+                            // Reset processing state for STT mode
+                            this.isProcessing = false;
+                            this.updateVADStatus('listening', 'VAD 활성');
                         } else {
-                            this.displayConversation(result.question, result.answer);
+                            this.displayConversation(result.question, result.answer, result.audio_url);
+                            // Auto-play TTS if available
+                            if (result.audio_url && this.ttsEnabled) {
+                                await this.playTTS(result.audio_url);
+                                // Processing state will be reset when TTS ends
+                            } else {
+                                // Reset processing state if no TTS
+                                this.isProcessing = false;
+                                this.updateVADStatus('listening', 'VAD 활성');
+                            }
                         }
-                        this.updateVADStatus('listening', 'VAD 활성');
                     } else {
                         this.status.textContent = '처리 실패: ' + result.error;
+                        this.isProcessing = false;
                         this.updateVADStatus('listening', 'VAD 활성');
                     }
                 } catch (error) {
                     console.error('서버 통신 오류:', error);
                     this.status.textContent = '서버 연결 실패';
+                    this.isProcessing = false;
                     this.updateVADStatus('listening', 'VAD 활성');
                 }
             }
@@ -545,7 +957,7 @@
                 this.transcription.insertBefore(newEntry, this.transcription.firstChild);
             }
             
-            displayConversation(question, answer) {
+            displayConversation(question, answer, audioUrl = null) {
                 const timestamp = new Date().toLocaleTimeString();
                 const currentContent = this.conversation.innerHTML;
                 
@@ -562,9 +974,19 @@
                 
                 const answerDiv = document.createElement('div');
                 answerDiv.className = 'answer-item';
+                
+                // Simple status indicator for TTS (no manual controls)
+                let ttsStatus = '';
+                if (audioUrl) {
+                    ttsStatus = `
+                        <div class="tts-status">🔊 음성 답변 자동 재생됨</div>
+                    `;
+                }
+                
                 answerDiv.innerHTML = `
                     <div class="timestamp">[${timestamp}] ExaOne 답변</div>
                     <div>${answer}</div>
+                    ${ttsStatus}
                 `;
                 
                 this.conversation.insertBefore(answerDiv, this.conversation.firstChild);
@@ -602,6 +1024,9 @@
                             noiseSuppression: true
                         }
                     });
+                    
+                    // Initialize audio system after user gesture (microphone permission)
+                    await this.initializeAudioSystem();
                     
                     this.audioContext = new AudioContext({ sampleRate: 16000 });
                     this.analyser = this.audioContext.createAnalyser();
@@ -655,6 +1080,11 @@
                     if (!this.vadEnabled) return;
                     
                     this.vadAnimationFrame = requestAnimationFrame(checkVAD);
+                    
+                    // Skip VAD processing if paused for TTS or already processing
+                    if (this.vadPausedForTTS || this.isProcessing || this.isPlayingTTS) {
+                        return;
+                    }
                     
                     this.analyser.getByteTimeDomainData(dataArray);
                     

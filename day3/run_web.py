@@ -17,7 +17,7 @@ def check_dependencies():
     
     # Python 패키지 확인
     required_packages = [
-        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad', 'ollama'
+        'flask', 'whisper', 'numpy', 'torch', 'webrtcvad', 'ollama', 'edge_tts'
     ]
     
     missing_packages = []
@@ -83,6 +83,7 @@ def run_server():
         print("📱 브라우저에서 http://localhost:5000 접속하세요")
         print("🎤 마이크 권한을 허용해주세요 (VAD 자동 감지)")
         print("🤖 음성으로 질문하면 ExaOne이 답변합니다")
+        print("🔊 TTS로 답변을 음성으로 들을 수 있습니다")
         print("💡 Ctrl+C로 종료")
         
         # 자동으로 브라우저 열기 (WSL에서는 작동하지 않을 수 있음)
@@ -100,8 +101,8 @@ def run_server():
 
 def main():
     """메인 함수"""
-    print("🎤 Voice Q&A with ExaOne - Natural Voice Interaction")
-    print("=" * 55)
+    print("🎤 Voice Q&A with ExaOne + TTS - Complete Voice Assistant")
+    print("=" * 60)
     
     if not check_dependencies():
         print("\n❌ 의존성 확인 실패. 설치 후 다시 실행하세요.")

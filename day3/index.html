@@ -503,7 +503,10 @@
                 // Camera related properties
                 this.cameraStream = null;
                 this.cameraActive = false;
-                this.currentImage = null;
+                
+                // State recovery properties
+                this.processingTimeout = null;
+                this.maxProcessingTime = 30000; // 30 seconds max processing time
                 this.vadSilenceCounter = 0;
                 this.vadSilenceThreshold = 75; // ~3초 (40ms * 75) - 더 안정적
                 this.vadSpeakingCounter = 0;
@@ -782,23 +785,24 @@
                         this.isPlayingTTS = false;
                         this.isProcessing = false;  // Reset processing state
                         
+                        // Clear any remaining timeouts
+                        this.clearProcessingTimeout();
+                        
                         // Remove from audio sources
                         const index = this.audioSources.indexOf(source);
                         if (index > -1) {
                             this.audioSources.splice(index, 1);
                         }
                         
-                        // Resume VAD after TTS
+                        // Resume VAD after TTS - CRITICAL for continuous chat
                         this.resumeVADAfterTTS();
                         
                         this.status.textContent = '✅ TTS 재생 완료';
+                        
+                        // Resume VAD immediately for continuous chat
                         setTimeout(() => {
-                            if (this.vadEnabled && !this.vadPausedForTTS) {
-                                this.updateVADStatus('listening', 'VAD 활성');
-                            } else if (!this.vadEnabled) {
-                                this.status.textContent = '준비 완료';
-                            }
-                        }, 1000);
+                            this.resumeVADListening();
+                        }, 500); // Short delay to ensure clean state transition
                     };
                     
                     // Start playback immediately
@@ -828,17 +832,18 @@
                         this.isPlayingTTS = false;
                         this.isProcessing = false;  // Reset processing state
                         
+                        // Clear any remaining timeouts
+                        this.clearProcessingTimeout();
+                        
                         // Resume VAD after TTS
                         this.resumeVADAfterTTS();
                         
                         this.status.textContent = '✅ TTS 재생 완료';
+                        
+                        // Resume VAD immediately for continuous chat
                         setTimeout(() => {
-                            if (this.vadEnabled && !this.vadPausedForTTS) {
-                                this.updateVADStatus('listening', 'VAD 활성');
-                            } else if (!this.vadEnabled) {
-                                this.status.textContent = '준비 완료';
-                            }
-                        }, 1000);
+                            this.resumeVADListening();
+                        }, 500); // Short delay to ensure clean state transition
                         
                         // Remove event listener
                         this.ttsAudio.removeEventListener('ended', handleAudioEnd);
@@ -881,6 +886,11 @@
                 this.visionConversation.style.display = 'none';
                 this.cameraContainer.style.display = 'none';
                 
+                // Reset button text to default
+                this.startBtn.textContent = '🎙️ 녹음 시작';
+                this.stopBtn.textContent = '⏹️ 녹음 중지';
+                this.vadToggleBtn.textContent = '🔊 VAD 시작';
+                
                 if (mode === 'stt') {
                     this.sttModeBtn.classList.add('active');
                     this.transcription.style.display = 'block';
@@ -905,41 +915,68 @@
                     this.visionModeBtn.classList.add('active');
                     this.visionConversation.style.display = 'block';
                     this.cameraContainer.style.display = 'block';
-                    this.startBtn.style.display = 'inline-block';
-                    this.stopBtn.style.display = 'inline-block';
-                    this.vadToggleBtn.style.display = 'none';
-                    if (this.vadEnabled) this.stopVAD();
+                    
+                    // Hide manual buttons - use auto VAD for natural flow
+                    this.startBtn.style.display = 'none';
+                    this.stopBtn.style.display = 'none';
+                    this.vadToggleBtn.style.display = 'inline-block';
+                    this.vadToggleBtn.textContent = '🎤👁️ 비전 대화 시작';
+                    
                     // Initialize camera devices list
                     this.initializeCameraDevices();
+                    
+                    // Update VAD sensitivity for faster vision mode response
+                    this.updateVADSensitivity();
                 }
                 
-                this.status.textContent = `${mode.toUpperCase()} 모드 활성화`;
+                // Update VAD thresholds when switching modes
+                if (this.vadEnabled) {
+                    this.updateVADSensitivity();
+                }
+                
+                if (mode === 'vision') {
+                    this.status.textContent = '👁️ 비전 모드 - 카메라를 시작하고 바로 대화하세요';
+                } else {
+                    this.status.textContent = `${mode.toUpperCase()} 모드 활성화`;
+                }
             }
             
             updateVADSensitivity() {
                 const sensitivity = this.vadSensitivity.value;
+                
+                // Adjust thresholds based on mode and sensitivity
+                const isVisionMode = this.currentMode === 'vision';
+                
                 switch(sensitivity) {
                     case 'low':
                         this.vadThreshold = 0.005;
-                        this.vadSilenceThreshold = 100; // 4초 - 더 긴 침묵 대기
-                        this.vadSpeakingThreshold = 10; // 더 긴 음성 감지 필요
+                        this.vadSilenceThreshold = isVisionMode ? 60 : 100; // Vision: 2.4초, Normal: 4초
+                        this.vadSpeakingThreshold = isVisionMode ? 8 : 10; // Vision: faster response
                         break;
                     case 'medium':
                         this.vadThreshold = 0.01;
-                        this.vadSilenceThreshold = 75; // 3초 - 안정적인 침묵 감지
-                        this.vadSpeakingThreshold = 7; // 적당한 음성 감지
+                        this.vadSilenceThreshold = isVisionMode ? 45 : 75; // Vision: 1.8초, Normal: 3초
+                        this.vadSpeakingThreshold = isVisionMode ? 5 : 7; // Vision: faster response
                         break;
                     case 'high':
                         this.vadThreshold = 0.02;
-                        this.vadSilenceThreshold = 50; // 2초
-                        this.vadSpeakingThreshold = 5; // 빠른 음성 감지
+                        this.vadSilenceThreshold = isVisionMode ? 30 : 50; // Vision: 1.2초, Normal: 2초
+                        this.vadSpeakingThreshold = isVisionMode ? 3 : 5; // Vision: very fast response
                         break;
                 }
-                console.log(`VAD 감도 변경: ${sensitivity}, 임계값: ${this.vadThreshold}, 침묵: ${this.vadSilenceThreshold}`);
+                console.log(`VAD 감도 변경: ${sensitivity}, 모드: ${this.currentMode}, 임계값: ${this.vadThreshold}, 침묵: ${this.vadSilenceThreshold}`);
             }
             
             async startRecording() {
                 try {
+                    // Check camera is ready for vision mode, but don't capture yet
+                    if (this.currentMode === 'vision') {
+                        if (!this.cameraActive || !this.cameraStream) {
+                            this.status.textContent = '카메라를 먼저 시작해주세요';
+                            return;
+                        }
+                    }
+                    
                     this.stream = await navigator.mediaDevices.getUserMedia({ 
                         audio: {
                             sampleRate: 16000,
@@ -1013,6 +1050,13 @@
                 this.isProcessing = true;
                 this.updateVADStatus('processing', '처리 중');
                 
+                // Set timeout to prevent stuck states - CRITICAL for reliability
+                this.processingTimeout = setTimeout(() => {
+                    console.error('⏰ Processing timeout - forcing state reset');
+                    this.status.textContent = '처리 시간 초과 - 상태 복구 중';
+                    this.forceResetState();
+                }, this.maxProcessingTime);
+                
                 const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
                 const formData = new FormData();
                 formData.append('audio', audioBlob);
@@ -1027,12 +1071,17 @@
                         endpoint = '/chat';
                     } else if (this.currentMode === 'vision') {
                         endpoint = '/vision_chat';
-                        // Add current camera image if available
-                        if (this.currentImage) {
-                            formData.append('image', this.currentImage);
-                        } else {
-                            this.status.textContent = '카메라 이미지를 먼저 캡처해주세요';
+                        // Get LIVE frame at this exact moment - NO caching, NO delays
+                        try {
+                            this.status.textContent = '👁️ 실시간 화면 분석 중...';
+                            const liveImageData = this.getLiveVideoFrame();
+                            formData.append('image', liveImageData);
+                            console.log('🎯 LIVE frame captured for immediate analysis');
+                        } catch (error) {
+                            console.error('실시간 프레임 캡처 실패:', error);
+                            this.status.textContent = '카메라 준비되지 않음 - 카메라를 확인해주세요';
                             this.isProcessing = false;
+                            this.resumeVADListening();
                             return;
                         }
                     }
@@ -1049,40 +1098,57 @@
                             this.displayTranscription(result.text);
                             // Reset processing state for STT mode
                             this.isProcessing = false;
-                            this.updateVADStatus('listening', 'VAD 활성');
+                            this.clearProcessingTimeout();
+                            this.resumeVADListening();
                         } else if (this.currentMode === 'vision') {
-                            this.displayVisionConversation(result.question, result.answer, result.audio_url, this.currentImage);
+                            // For vision mode, always use the live captured image
+                            this.displayVisionConversation(result.question, result.answer, result.audio_url, null);
+                            
                             // Auto-play TTS if available
                             if (result.audio_url && this.ttsEnabled) {
+                                this.clearProcessingTimeout(); // Clear timeout before TTS
                                 await this.playTTS(result.audio_url);
                                 // Processing state will be reset when TTS ends
                             } else {
-                                // Reset processing state if no TTS
+                                // Reset processing state if no TTS - CRITICAL for continuous chat
                                 this.isProcessing = false;
-                                this.updateVADStatus('listening', 'VAD 활성');
+                                this.clearProcessingTimeout();
+                                this.resumeVADListening();
                             }
                         } else {
                             this.displayConversation(result.question, result.answer, result.audio_url);
                             // Auto-play TTS if available
                             if (result.audio_url && this.ttsEnabled) {
+                                this.clearProcessingTimeout(); // Clear timeout before TTS
                                 await this.playTTS(result.audio_url);
                                 // Processing state will be reset when TTS ends
                             } else {
                                 // Reset processing state if no TTS
                                 this.isProcessing = false;
-                                this.updateVADStatus('listening', 'VAD 활성');
+                                this.clearProcessingTimeout();
+                                this.resumeVADListening();
                             }
                         }
                     } else {
                         this.status.textContent = '처리 실패: ' + result.error;
                         this.isProcessing = false;
-                        this.updateVADStatus('listening', 'VAD 활성');
+                        this.clearProcessingTimeout();
+                        this.resumeVADListening(); // Always resume even on failure
                     }
                 } catch (error) {
                     console.error('서버 통신 오류:', error);
                     this.status.textContent = '서버 연결 실패';
                     this.isProcessing = false;
-                    this.updateVADStatus('listening', 'VAD 활성');
+                    this.clearProcessingTimeout();
+                    this.resumeVADListening(); // Always resume even on error
+                }
+            }
+            
+            clearProcessingTimeout() {
+                if (this.processingTimeout) {
+                    clearTimeout(this.processingTimeout);
+                    this.processingTimeout = null;
+                    console.log('🔧 Processing timeout cleared');
                 }
             }
             
@@ -1241,7 +1307,7 @@
                     this.captureBtn.disabled = false;
                     this.stopCameraBtn.disabled = false;
                     
-                    this.cameraStatus.textContent = '카메라 활성 - 캡처 준비됨';
+                    this.cameraStatus.textContent = '👁️ 라이브 카메라 - 바로 대화하세요!';
                     
                 } catch (error) {
                     console.error('카메라 시작 오류:', error);
@@ -1255,33 +1321,105 @@
                     return;
                 }
                 
-                try {
-                    const canvas = document.createElement('canvas');
-                    const context = canvas.getContext('2d');
-                    
-                    canvas.width = this.cameraVideo.videoWidth;
-                    canvas.height = this.cameraVideo.videoHeight;
-                    
-                    context.drawImage(this.cameraVideo, 0, 0, canvas.width, canvas.height);
-                    
-                    this.currentImage = canvas.toDataURL('image/jpeg', 0.8);
-                    
-                    // Show captured image preview
-                    const imgElement = document.createElement('img');
-                    imgElement.src = this.currentImage;
-                    imgElement.className = 'captured-image';
-                    imgElement.style.display = 'block';
-                    imgElement.style.margin = '10px auto';
-                    
-                    this.capturedImages.innerHTML = '';
-                    this.capturedImages.appendChild(imgElement);
-                    
-                    this.cameraStatus.textContent = '이미지 캡처 완료 - 음성 질문 가능';
-                    
-                } catch (error) {
-                    console.error('이미지 캡처 오류:', error);
-                    this.cameraStatus.textContent = '이미지 캡처 실패';
+                // Use requestAnimationFrame to ensure we capture the current live frame
+                requestAnimationFrame(() => {
+                    try {
+                        // Verify video is ready and has current frame data
+                        if (this.cameraVideo.readyState < 2) {
+                            console.log('Video not ready, retrying...');
+                            setTimeout(() => this.captureImage(), 100);
+                            return;
+                        }
+                        
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        
+                        // Ensure we use current video dimensions
+                        const videoWidth = this.cameraVideo.videoWidth;
+                        const videoHeight = this.cameraVideo.videoHeight;
+                        
+                        if (videoWidth === 0 || videoHeight === 0) {
+                            console.log('Video dimensions not ready, retrying...');
+                            setTimeout(() => this.captureImage(), 100);
+                            return;
+                        }
+                        
+                        canvas.width = videoWidth;
+                        canvas.height = videoHeight;
+                        
+                        // Draw the CURRENT frame from live video
+                        context.drawImage(this.cameraVideo, 0, 0, canvas.width, canvas.height);
+                        
+                        // Generate fresh base64 data from current frame
+                        this.currentImage = canvas.toDataURL('image/jpeg', 0.8);
+                        
+                        // Show captured image preview with timestamp for verification
+                        const timestamp = new Date().toLocaleTimeString();
+                        const imgElement = document.createElement('img');
+                        imgElement.src = this.currentImage;
+                        imgElement.className = 'captured-image';
+                        imgElement.style.display = 'block';
+                        imgElement.style.margin = '10px auto';
+                        imgElement.title = `Captured at ${timestamp}`;
+                        
+                        this.capturedImages.innerHTML = '';
+                        this.capturedImages.appendChild(imgElement);
+                        
+                        this.cameraStatus.textContent = `📸 최신 이미지 캡처됨 (${timestamp})`;
+                        
+                        console.log(`✅ Fresh frame captured at ${timestamp}`);
+                        
+                    } catch (error) {
+                        console.error('이미지 캡처 오류:', error);
+                        this.cameraStatus.textContent = '이미지 캡처 실패';
+                    }
+                });
+            }
+            
+            getLiveVideoFrame() {
+                // Synchronous live frame capture - NO caching, NO delays
+                if (!this.cameraActive || !this.cameraStream || this.cameraVideo.readyState < 2) {
+                    throw new Error('Camera not ready for live capture');
                 }
+                
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                
+                const videoWidth = this.cameraVideo.videoWidth;
+                const videoHeight = this.cameraVideo.videoHeight;
+                
+                if (videoWidth === 0 || videoHeight === 0) {
+                    throw new Error('Video dimensions not ready');
+                }
+                
+                canvas.width = videoWidth;
+                canvas.height = videoHeight;
+                
+                // Draw the EXACT CURRENT frame RIGHT NOW
+                context.drawImage(this.cameraVideo, 0, 0, canvas.width, canvas.height);
+                
+                // Generate base64 from this precise moment
+                const liveImageData = canvas.toDataURL('image/jpeg', 0.8);
+                
+                const timestamp = new Date().toLocaleTimeString();
+                console.log(`🎯 LIVE frame captured at exact moment: ${timestamp}`);
+                
+                // Update preview to show what was actually analyzed
+                this.updateImagePreview(liveImageData, timestamp);
+                
+                return liveImageData;
+            }
+            
+            updateImagePreview(imageData, timestamp) {
+                const imgElement = document.createElement('img');
+                imgElement.src = imageData;
+                imgElement.className = 'captured-image';
+                imgElement.style.display = 'block';
+                imgElement.style.margin = '10px auto';
+                imgElement.title = `Live analysis at ${timestamp}`;
+                
+                this.capturedImages.innerHTML = '';
+                this.capturedImages.appendChild(imgElement);
             }
             
             stopCamera() {
@@ -1333,8 +1471,13 @@
                     source.connect(this.analyser);
                     
                     this.vadEnabled = true;
-                    this.vadToggleBtn.textContent = '🔇 VAD 중지';
-                    this.updateVADStatus('listening', 'VAD 활성');
+                    if (this.currentMode === 'vision') {
+                        this.vadToggleBtn.textContent = '🔇 비전 대화 중지';
+                        this.updateVADStatus('listening', '👁️ 비전 대화 활성 - 말해보세요');
+                    } else {
+                        this.vadToggleBtn.textContent = '🔇 VAD 중지';
+                        this.updateVADStatus('listening', 'VAD 활성');
+                    }
                     
                     this.startVADLoop();
                     this.startVisualization();
@@ -1364,9 +1507,67 @@
                     this.audioContext.close();
                 }
                 
-                this.vadToggleBtn.textContent = '🔊 VAD 시작';
+                if (this.currentMode === 'vision') {
+                    this.vadToggleBtn.textContent = '🎤👁️ 비전 대화 시작';
+                } else {
+                    this.vadToggleBtn.textContent = '🔊 VAD 시작';
+                }
                 this.updateVADStatus('', '대기 중');
                 this.stopVisualization();
+            }
+            
+            resumeVADListening() {
+                // Resume VAD listening after processing - critical for continuous chat
+                if (this.vadEnabled && !this.isProcessing) {
+                    console.log('🔄 VAD listening resumed for continuous chat');
+                    
+                    // Reset counters for fresh detection
+                    this.vadSilenceCounter = 0;
+                    this.vadSpeakingCounter = 0;
+                    
+                    // Update status to show ready for next conversation
+                    if (this.currentMode === 'vision') {
+                        this.updateVADStatus('listening', '👁️ 다음 대화 준비 - 말해보세요');
+                    } else {
+                        this.updateVADStatus('listening', 'VAD 활성 - 다음 대화 준비');
+                    }
+                    
+                    // Ensure VAD loop is running
+                    if (!this.vadAnimationFrame) {
+                        this.startVADLoop();
+                    }
+                } else if (!this.vadEnabled) {
+                    console.log('ℹ️ VAD not enabled, skipping resume');
+                } else if (this.isProcessing) {
+                    console.log('⚠️ Still processing, will resume after processing completes');
+                }
+            }
+            
+            forceResetState() {
+                // Emergency state reset - use if app gets stuck
+                console.log('🔧 Force resetting all states for recovery');
+                
+                this.isProcessing = false;
+                this.isRecording = false;
+                this.vadPausedForTTS = false;
+                this.vadSilenceCounter = 0;
+                this.vadSpeakingCounter = 0;
+                
+                // Clear any pending timeouts
+                this.clearProcessingTimeout();
+                
+                // Stop any playing audio
+                this.stopAllAudio();
+                
+                if (this.vadEnabled) {
+                    this.resumeVADListening();
+                }
+                
+                if (this.currentMode === 'vision') {
+                    this.status.textContent = '👁️ 상태 복구됨 - 계속 대화하세요';
+                } else {
+                    this.status.textContent = '상태 복구됨';
+                }
             }
             
             startVADLoop() {
@@ -1402,7 +1603,11 @@
                             this.startAutoRecording();
                         }
                         
-                        this.updateVADStatus('speaking', '음성 감지');
+                        if (this.currentMode === 'vision') {
+                            this.updateVADStatus('speaking', '👁️ 시선 + 음성 감지');
+                        } else {
+                            this.updateVADStatus('speaking', '음성 감지');
+                        }
                     } else {
                         // Silence detected
                         this.vadSpeakingCounter = 0;
@@ -1413,7 +1618,11 @@
                         }
                         
                         if (!this.isRecording) {
-                            this.updateVADStatus('listening', 'VAD 활성');
+                            if (this.currentMode === 'vision') {
+                                this.updateVADStatus('listening', '👁️ 대화 준비중 - 말해보세요');
+                            } else {
+                                this.updateVADStatus('listening', 'VAD 활성');
+                            }
                         }
                     }
                 };
@@ -1423,6 +1632,16 @@
             
             async startAutoRecording() {
                 console.log('VAD: 자동 녹음 시작');
+                
+                // Check camera is ready for vision mode, but don't capture yet
+                if (this.currentMode === 'vision') {
+                    if (!this.cameraActive || !this.cameraStream) {
+                        console.log('VAD: 카메라가 비활성화되어 있음');
+                        this.updateVADStatus('listening', 'VAD 활성 (카메라 필요)');
+                        return;
+                    }
+                }
+                
                 this.isRecording = true;
                 this.audioChunks = [];
                 
@@ -1439,7 +1658,12 @@
                 };
                 
                 this.mediaRecorder.start();
-                this.updateVADStatus('speaking', '녹음 중');
+                
+                if (this.currentMode === 'vision') {
+                    this.updateVADStatus('speaking', '👁️🎙️ 보고 듣는 중...');
+                } else {
+                    this.updateVADStatus('speaking', '녹음 중');
+                }
             }
             
             stopAutoRecording() {
@@ -1463,14 +1687,24 @@
                 if (this.isRecording) {
                     this.startBtn.disabled = true;
                     this.stopBtn.disabled = false;
-                    this.status.textContent = '🔴 녹음 중...';
+                    
+                    if (this.currentMode === 'vision') {
+                        this.status.textContent = '🖼️📢 이미지 + 음성 녹음 중...';
+                    } else {
+                        this.status.textContent = '🔴 녹음 중...';
+                    }
                     this.status.className = 'status recording';
                 } else {
                     this.startBtn.disabled = false;
                     this.stopBtn.disabled = true;
                     this.status.className = 'status';
+                    
                     if (this.status.textContent.includes('녹음 중')) {
-                        this.status.textContent = '준비 완료';
+                        if (this.currentMode === 'vision') {
+                            this.status.textContent = '👁️ 카메라 준비 - 대화 시작하세요';
+                        } else {
+                            this.status.textContent = '준비 완료';
+                        }
                     }
                 }
             }
